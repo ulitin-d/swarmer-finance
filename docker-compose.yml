@@ -1,13 +1,30 @@
-version: '3.8'
-
+# Docker Compose для локальной разработки
 services:
-  postgres:
-    image: postgres:16
-    container_name: swarmer-finance-db
+  backend:
+    build: ./backend
+    ports:
+      - "3000:3000"
     environment:
-      POSTGRES_USER: finance_user
-      POSTGRES_PASSWORD: finance_password
-      POSTGRES_DB: finance_db
+      - DATABASE_URL=postgresql://swarmer:123456@postgres:5432/swarmerdb
+      - JWT_SECRET=dev_secret_min_32_chars_long_abcdef
+      - JWT_REFRESH_SECRET=dev_refresh_secret_min_32_chars_long
+      - CORS_ORIGIN=*
+
+  frontend:
+    build: .
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    environment:
+      - API_URL=http://backend:3000
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=swarmer
+      - POSTGRES_PASSWORD=123456
+      - POSTGRES_DB=swarmerdb
     ports:
       - "5432:5432"
     volumes:
