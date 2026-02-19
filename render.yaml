@@ -2,7 +2,7 @@ services:
   - type: web
     name: swarmer-finance
     plan: free
-    region: frankfurt
+    region: oregon
     dockerfilePath: Dockerfile
     dockerCommand: sh -c "nginx -g 'daemon off;' & cd /app/backend && node dist/index.js"
     envVars:
@@ -24,5 +24,11 @@ services:
 
 databases:
   - name: swarmer-finance-db
+    databaseName: swarmerdb
+    user: swarmer
     plan: free
-    region: frankfurt
+    region: oregon
+    ipAllowList:
+    - source: 0.0.0.0/0
+      description: everywhere
+    postgresMajorVersion: "18"
