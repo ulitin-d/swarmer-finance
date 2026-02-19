@@ -1,4 +1,4 @@
-# Multi-stage сборка для деплоя всего приложения
+# Multi-stage сборка
 FROM node:20-alpine AS builder
 
 WORKDIR /app
@@ -6,21 +6,19 @@ WORKDIR /app
 # Бэкенд
 COPY backend/package*.json backend/
 RUN cd backend && npm install
-
 COPY backend/ backend/
 RUN cd backend && npm run build
 
 # Фронтенд  
 COPY frontend/package*.json frontend/
 RUN cd frontend && npm install
-
 COPY frontend/ frontend/
 RUN cd frontend && npm run build
 
 # Production образ
 FROM node:20-alpine
 
-# Ставим nginx для фронтенда и прокси
+# Устанавливаем nginx
 RUN apk add --no-cache nginx
 
 WORKDIR /app
@@ -33,7 +31,7 @@ COPY --from=builder /app/backend/package*.json ./backend/
 # Копируем фронтенд
 COPY --from=builder /app/frontend/dist ./frontend/dist
 
-# Nginx конфиг с проксированием /api
+# Nginx конфиг с проксированием /api -> бэкенд
 RUN echo 'server { \
     listen 80; \
     server_name localhost; \
@@ -48,7 +46,7 @@ RUN echo 'server { \
         proxy_pass http://localhost:3000/; \
         proxy_http_version 1.1; \
         proxy_set_header Upgrade $http_upgrade; \
-        proxy_set_header Connection '"'"'upgrade'"'"'; \
+        proxy_set_header Connection "upgrade"; \
         proxy_set_header Host $host; \
         proxy_set_header X-Real-IP $remote_addr; \
         proxy_cache_bypass $http_upgrade; \
@@ -57,5 +55,5 @@ RUN echo 'server { \
 
 EXPOSE 80
 
-# Запускаем nginx и node параллельно
-CMD sh -c "nginx -g 'daemon off;' & cd /app/backend && node dist/index.js"
+# Старт: nginx + node параллельно
+CMD ["sh", "-c", "nginx -g 'daemon off;' & cd /app/backend && node dist/index.js"]
