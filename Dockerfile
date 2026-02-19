@@ -18,8 +18,7 @@ RUN cd frontend && npm run build
 # Production образ
 FROM node:20-alpine
 
-# Устанавливаем nginx и создаём скрипт запуска
-RUN apk add --no-cache nginx
+RUN apk add --no-cache nginx bash
 
 WORKDIR /app
 
@@ -31,7 +30,7 @@ COPY --from=builder /app/backend/package*.json ./backend/
 # Копируем фронтенд
 COPY --from=builder /app/frontend/dist ./frontend/dist
 
-# Nginx конфиг
+# Nginx конфиг - /api -> localhost:3000
 RUN echo 'server { \
     listen 80; \
     server_name localhost; \
@@ -39,7 +38,7 @@ RUN echo 'server { \
     index index.html; \
     location / { try_files $uri $uri/ /index.html; } \
     location /api/ { \
-        proxy_pass http://127.0.0.1:3000/; \
+        proxy_pass http://127.0.0.1:3000/api/; \
         proxy_http_version 1.1; \
         proxy_set_header Upgrade $http_upgrade; \
         proxy_set_header Connection "upgrade"; \
@@ -48,9 +47,6 @@ RUN echo 'server { \
     } \
 }' > /etc/nginx/http.d/default.conf
 
-# Скрипт запуска
-RUN echo '#!/bin/sh\nnginx &\ncd /app/backend && node dist/index.js' > /start.sh && chmod +x /start.sh
-
 EXPOSE 80
 
-CMD ["/start.sh"]
+CMD ["bash", "-c", "nginx & cd /app/backend && node dist/index.js"]
