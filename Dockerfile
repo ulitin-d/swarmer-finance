@@ -18,7 +18,7 @@ RUN cd frontend && npm run build
 # Production образ
 FROM node:20-alpine
 
-# Устанавливаем nginx
+# Устанавливаем nginx и создаём скрипт запуска
 RUN apk add --no-cache nginx
 
 WORKDIR /app
@@ -31,29 +31,26 @@ COPY --from=builder /app/backend/package*.json ./backend/
 # Копируем фронтенд
 COPY --from=builder /app/frontend/dist ./frontend/dist
 
-# Nginx конфиг с проксированием /api -> бэкенд
+# Nginx конфиг
 RUN echo 'server { \
     listen 80; \
     server_name localhost; \
     root /app/frontend/dist/swarmer-finance/browser; \
     index index.html; \
-    \
-    location / { \
-        try_files $uri $uri/ /index.html; \
-    } \
-    \
+    location / { try_files $uri $uri/ /index.html; } \
     location /api/ { \
-        proxy_pass http://localhost:3000/; \
+        proxy_pass http://127.0.0.1:3000/; \
         proxy_http_version 1.1; \
         proxy_set_header Upgrade $http_upgrade; \
         proxy_set_header Connection "upgrade"; \
         proxy_set_header Host $host; \
         proxy_set_header X-Real-IP $remote_addr; \
-        proxy_cache_bypass $http_upgrade; \
     } \
 }' > /etc/nginx/http.d/default.conf
 
+# Скрипт запуска
+RUN echo '#!/bin/sh\nnginx &\ncd /app/backend && node dist/index.js' > /start.sh && chmod +x /start.sh
+
 EXPOSE 80
 
-# Старт: nginx + node параллельно
-CMD ["sh", "-c", "nginx -g 'daemon off;' & cd /app/backend && node dist/index.js"]
+CMD ["/start.sh"]
