@@ -5,7 +5,6 @@ services:
     region: frankfurt
     runtime: docker
     dockerfilePath: Dockerfile
-    dockerCommand: sh -c "nginx -g 'daemon off;' & cd /app/backend && node dist/index.js"
     envVars:
       - key: NODE_ENV
         value: production
