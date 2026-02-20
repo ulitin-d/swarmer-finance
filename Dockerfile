@@ -30,23 +30,10 @@ COPY --from=builder /app/backend/package*.json ./backend/
 # Копируем фронтенд
 COPY --from=builder /app/frontend/dist ./frontend/dist
 
-# Nginx конфиг - /api -> localhost:3000
-RUN echo 'server { \
-    listen 80; \
-    server_name localhost; \
-    root /app/frontend/dist/swarmer-finance/browser; \
-    index index.html; \
-    location / { try_files $uri $uri/ /index.html; } \
-    location /api/ { \
-        proxy_pass http://127.0.0.1:3000/api/; \
-        proxy_http_version 1.1; \
-        proxy_set_header Upgrade $http_upgrade; \
-        proxy_set_header Connection "upgrade"; \
-        proxy_set_header Host $host; \
-        proxy_set_header X-Real-IP $remote_addr; \
-    } \
-}' > /etc/nginx/http.d/default.conf
+# Startup script generates nginx config at runtime using Render's $PORT
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
-EXPOSE 80
+EXPOSE 10000
 
-CMD ["bash", "-c", "nginx & cd /app/backend && node dist/index.js"]
+CMD ["/app/start.sh"]
