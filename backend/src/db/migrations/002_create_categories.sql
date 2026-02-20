@@ -21,3 +21,6 @@ INSERT INTO categories (id, user_id, name, parent_id) VALUES
   (1, NULL, 'Income', NULL),
   (2, NULL, 'Expenses', NULL)
 ON CONFLICT (id) DO NOTHING;
+
+-- Advance the sequence past the explicitly-inserted IDs
+SELECT setval('categories_id_seq', (SELECT MAX(id) FROM categories));
