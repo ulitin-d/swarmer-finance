@@ -26,6 +26,7 @@ WORKDIR /app
 COPY --from=builder /app/backend/dist ./backend/dist
 COPY --from=builder /app/backend/node_modules ./backend/node_modules
 COPY --from=builder /app/backend/package*.json ./backend/
+COPY --from=builder /app/backend/src ./backend/src
 
 # Копируем фронтенд
 COPY --from=builder /app/frontend/dist ./frontend/dist
