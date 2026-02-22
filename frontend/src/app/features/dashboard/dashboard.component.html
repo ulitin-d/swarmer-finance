@@ -1,0 +1,48 @@
+    <div class="page-container">
+      <header class="header">
+        <h1>Dashboard</h1>
+        <div class="user-info">
+          <span>{{ authService.user()?.email }}</span>
+          <button tuiButton appearance="flat" size="s" (click)="authService.logout()">
+            Logout
+          </button>
+        </div>
+      </header>
+
+      <nav class="nav-links">
+        <a routerLink="/transactions" class="nav-link">
+          <button tuiButton size="l">Transactions</button>
+        </a>
+        <a routerLink="/categories" class="nav-link">
+          <button tuiButton appearance="secondary" size="l">Categories</button>
+        </a>
+      </nav>
+
+      <div class="card summary-card">
+        <h2>Current Month Summary</h2>
+        @if (loading()) {
+          <div class="loading">Loading...</div>
+        } @else if (summary(); as s) {
+          <div class="period">
+            {{ s.period.from | date:'mediumDate' }} - {{ s.period.to | date:'mediumDate' }}
+          </div>
+          <div class="summary-grid">
+            <div class="summary-item income">
+              <span class="label">Income</span>
+              <span class="amount">{{ s.income | currency }}</span>
+            </div>
+            <div class="summary-item expense">
+              <span class="label">Expenses</span>
+              <span class="amount">{{ s.expense | currency }}</span>
+            </div>
+            <div class="summary-item balance" [class.negative]="s.balance < 0">
+              <span class="label">Balance</span>
+              <span class="amount">{{ s.balance | currency }}</span>
+            </div>
+          </div>
+        } @else {
+          <p>Unable to load summary</p>
+          <button tuiButton (click)="loadSummary()">Retry</button>
+        }
+      </div>
+    </div>

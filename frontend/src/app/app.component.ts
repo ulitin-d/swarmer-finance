@@ -7,17 +7,8 @@ import { AuthService } from './core/auth.service';
   selector: 'app-root',
   standalone: true,
   imports: [RouterOutlet, TuiRoot],
-  template: `
-    <tui-root>
-      <router-outlet />
-    </tui-root>
-  `,
-  styles: [`
-    :host {
-      display: block;
-      min-height: 100vh;
-    }
-  `]
+  templateUrl: './app.component.html',
+  styleUrl: './app.component.scss'
 })
 export class AppComponent {
   authService = inject(AuthService);

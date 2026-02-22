@@ -1,0 +1,20 @@
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+.header h1 { margin: 0; font-size: 28px; }
+.user-info { display: flex; align-items: center; gap: 16px; }
+.nav-links { display: flex; gap: 16px; margin-bottom: 24px; }
+.nav-link button { width: 100%; }
+.summary-card h2 { margin: 0 0 16px; font-size: 20px; }
+.period { color: #666; margin-bottom: 24px; }
+.summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.summary-item { padding: 20px; border-radius: 8px; text-align: center; }
+.summary-item .label { display: block; font-size: 14px; color: #666; margin-bottom: 8px; }
+.summary-item .amount { font-size: 24px; font-weight: 600; }
+.summary-item.income { background: rgba(34, 197, 94, 0.1); }
+.summary-item.income .amount { color: #22c55e; }
+.summary-item.expense { background: rgba(239, 68, 68, 0.1); }
+.summary-item.expense .amount { color: #ef4444; }
+.summary-item.balance { background: rgba(59, 130, 246, 0.1); }
+.summary-item.balance .amount { color: #3b82f6; }
+.summary-item.balance.negative .amount { color: #ef4444; }
+.loading { padding: 20px; text-align: center; color: #666; }
+@media (max-width: 768px) { .summary-grid { grid-template-columns: 1fr; } }
