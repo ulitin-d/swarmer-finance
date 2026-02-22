@@ -26,6 +26,9 @@ server {
 }
 EOF
 
+# Run migrations
+cd /app/backend && npm run migrate
+
 # Start backend on internal port (override Render's PORT for this process only)
 PORT=${BACKEND_PORT} node /app/backend/dist/index.js &
 
