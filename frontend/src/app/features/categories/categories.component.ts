@@ -1,13 +1,16 @@
-import { Component, inject, signal, OnInit } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, OnInit, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { TuiButton } from '@taiga-ui/core';
+import { TuiButton, TuiDataList, TuiLoader, TuiTextfield, tuiItemsHandlersProvider } from '@taiga-ui/core';
+import { TuiDataListWrapper, TuiInputColor, TuiSelect } from '@taiga-ui/kit';
 import { ApiService, Category } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 
 @Component({
   selector: 'app-categories',
   standalone: true,
-  imports: [ReactiveFormsModule, TuiButton],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [ReactiveFormsModule, TuiButton, TuiTextfield, TuiSelect, TuiDataList, TuiDataListWrapper, TuiInputColor, TuiLoader],
+  providers: [tuiItemsHandlersProvider({ stringify: signal((cat: Category) => cat.name) })],
   templateUrl: './categories.component.html',
   styleUrl: './categories.component.scss'
 })
@@ -17,7 +20,7 @@ export class CategoriesComponent implements OnInit {
 
   form = new FormGroup({
     name: new FormControl<string>('', [Validators.required]),
-    parentId: new FormControl<number | null>(null, [Validators.required]),
+    parentId: new FormControl<Category | null>(null, [Validators.required]),
     color: new FormControl<string>('#000000', [])
   });
 
@@ -79,7 +82,7 @@ export class CategoriesComponent implements OnInit {
     
     const request = editing
       ? this.apiService.updateCategory(editing.id, { name: reqName, color: reqColor })
-      : this.apiService.createCategory({ name: reqName, parentId: parentId!, color: reqColor });
+      : this.apiService.createCategory({ name: reqName, parentId: parentId!.id, color: reqColor });
     request.subscribe({ 
       next: () => { 
         this.closeDialog(); 

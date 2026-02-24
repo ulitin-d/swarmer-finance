@@ -12,9 +12,4 @@
 .dialog { width: 100%; max-width: 480px; padding: 24px; background: white; border-radius: 8px; }
 .dialog h2 { margin: 0 0 24px; }
 .dialog-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; }
-.form-group { margin-bottom: 16px; }
-.form-group label { display: block; margin-bottom: 8px; font-weight: 500; color: #666; }
-.form-input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
-.form-input-color { width: 60px; height: 40px; padding: 2px; cursor: pointer; }
-.form-input:focus { outline: none; border-color: #526ed3; }
-.loading { padding: 20px; text-align: center; color: #666; }
+.field { display: block; margin-bottom: 16px; }

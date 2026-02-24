@@ -4,59 +4,60 @@
         <button tuiButton (click)="openDialog()">Add Category</button>
       </header>
 
-      @if (loading()) {
-        <div class="loading">Loading...</div>
-      } @else if (categories().length > 0) {
-        <div class="categories-tree">
-          @for (root of categories(); track root.id) {
-            <div class="root-category">
-              <div class="category-row system">
-                <span class="category-icon" [style.background]="root.color">●</span>
-                <span class="category-name">{{ root.name }}</span>
+      <tui-loader [showLoader]="loading()">
+        @if (categories().length > 0) {
+          <div class="categories-tree">
+            @for (root of categories(); track root.id) {
+              <div class="root-category">
+                <div class="category-row system">
+                  <span class="category-icon" [style.background]="root.color">●</span>
+                  <span class="category-name">{{ root.name }}</span>
+                </div>
+                <div class="children">
+                  @for (child of root.children || []; track child.id) {
+                    <div class="category-row">
+                      <span class="category-icon" [style.background]="child.color">●</span>
+                      <span class="category-name">{{ child.name }}</span>
+                      <span class="category-actions">
+                        @if (child.user_id) {
+                          <button tuiButton appearance="flat" size="s" (click)="openDialog(child)">Edit</button>
+                          <button tuiButton appearance="flat" size="s" (click)="deleteCategory(child.id)">Delete</button>
+                        }
+                      </span>
+                    </div>
+                  }
+                </div>
               </div>
-              <div class="children">
-                @for (child of root.children || []; track child.id) {
-                  <div class="category-row">
-                    <span class="category-icon" [style.background]="child.color">●</span>
-                    <span class="category-name">{{ child.name }}</span>
-                    <span class="category-actions">
-                      @if (child.user_id) {
-                        <button tuiButton appearance="flat" size="s" (click)="openDialog(child)">Edit</button>
-                        <button tuiButton appearance="flat" size="s" (click)="deleteCategory(child.id)">Delete</button>
-                      }
-                    </span>
-                  </div>
-                }
-              </div>
-            </div>
-          }
-        </div>
-      }
+            }
+          </div>
+        }
+      </tui-loader>
 
       @if (showDialog()) {
         <div class="dialog-overlay" (click)="closeDialog()">
           <div class="dialog card" (click)="$event.stopPropagation()">
             <h2>{{ editingCategory() ? 'Edit' : 'Add' }} Category</h2>
             <form [formGroup]="form" (ngSubmit)="onSubmit()">
-              <div class="form-group">
-                <label>Name</label>
-                <input type="text" formControlName="name" class="form-input" placeholder="Category name">
-              </div>
+              <tui-textfield class="field">
+                <label tuiLabel>Name</label>
+                <input tuiTextfield formControlName="name" placeholder="Category name" />
+              </tui-textfield>
+
               @if (!editingCategory()) {
-                <div class="form-group">
-                  <label>Parent Category</label>
-                  <select formControlName="parentId" class="form-input">
-                    <option [value]="null">Select parent</option>
-                    @for (cat of parentCategories(); track cat.id) {
-                      <option [value]="cat.id">{{ cat.name }}</option>
-                    }
-                  </select>
-                </div>
+                <tui-textfield class="field">
+                  <label tuiLabel>Parent Category</label>
+                  <input tuiSelect formControlName="parentId" placeholder="Select parent" />
+                  <ng-template tuiDataList>
+                    <tui-data-list-wrapper [items]="parentCategories()" />
+                  </ng-template>
+                </tui-textfield>
               }
-              <div class="form-group">
-                <label>Color</label>
-                <input type="color" formControlName="color" class="form-input-color">
-              </div>
+
+              <tui-textfield class="field">
+                <label tuiLabel>Color</label>
+                <input tuiInputColor formControlName="color" />
+              </tui-textfield>
+
               <div class="dialog-actions">
                 <button tuiButton appearance="flat" type="button" (click)="closeDialog()">Cancel</button>
                 <button tuiButton type="submit" [disabled]="form.invalid">{{ editingCategory() ? 'Update' : 'Create' }}</button>
