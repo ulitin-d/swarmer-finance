@@ -10,7 +10,7 @@ import { AuthService } from '../../core/auth.service';
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ReactiveFormsModule, TuiButton, TuiTextfield, TuiSelect, TuiDataList, TuiDataListWrapper, TuiInputColor, TuiLoader],
-  providers: [tuiItemsHandlersProvider({ stringify: (cat: Category) => cat.name })],
+  providers: [tuiItemsHandlersProvider({ stringify: signal((cat: unknown) => (cat as Category).name) })],
   templateUrl: './categories.component.html',
   styleUrl: './categories.component.scss'
 })
