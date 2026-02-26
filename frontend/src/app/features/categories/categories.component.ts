@@ -10,7 +10,7 @@ import { AuthService } from '../../core/auth.service';
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ReactiveFormsModule, TuiButton, TuiTextfield, TuiSelect, TuiDataList, TuiDataListWrapper, TuiInputColor, TuiLoader],
-  providers: [tuiItemsHandlersProvider({ stringify: signal((cat: Category) => cat.name) })],
+  providers: [tuiItemsHandlersProvider({ stringify: (cat: Category) => cat.name })],
   templateUrl: './categories.component.html',
   styleUrl: './categories.component.scss'
 })
@@ -44,16 +44,7 @@ export class CategoriesComponent implements OnInit {
     });
   }
 
-  parentCategories = () => {
-    const cats = this.categories();
-    const result: Category[] = [];
-    for (const root of cats) {
-      if (root.children?.length) {
-        result.push(...root.children.filter(c => c.user_id !== null));
-      }
-    }
-    return result;
-  };
+  parentCategories = () => this.categories();
 
   openDialog(cat?: Category) {
     if (cat) {
