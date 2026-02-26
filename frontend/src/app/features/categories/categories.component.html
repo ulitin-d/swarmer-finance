@@ -38,13 +38,13 @@
           <div class="dialog card" (click)="$event.stopPropagation()">
             <h2>{{ editingCategory() ? 'Edit' : 'Add' }} Category</h2>
             <form [formGroup]="form" (ngSubmit)="onSubmit()">
-              <tui-textfield class="field">
+              <tui-textfield>
                 <label tuiLabel>Name</label>
                 <input tuiTextfield formControlName="name" placeholder="Category name" />
               </tui-textfield>
 
               @if (!editingCategory()) {
-                <tui-textfield class="field">
+                <tui-textfield>
                   <label tuiLabel>Parent Category</label>
                   <input tuiSelect formControlName="parentId" placeholder="Select parent" />
                   <ng-template tuiDataList>
@@ -53,7 +53,7 @@
                 </tui-textfield>
               }
 
-              <tui-textfield class="field">
+              <tui-textfield>
                 <label tuiLabel>Color</label>
                 <input tuiInputColor formControlName="color" />
               </tui-textfield>
