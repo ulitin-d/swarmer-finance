@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject, OnInit, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { TuiButton, TuiDataList, TuiLoader, TuiTextfield, tuiItemsHandlersProvider } from '@taiga-ui/core';
+import { TuiButton, TuiLoader, TuiTextfield, tuiItemsHandlersProvider } from '@taiga-ui/core';
 import { TuiDataListWrapper, TuiInputColor, TuiSelect } from '@taiga-ui/kit';
 import { ApiService, Category } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
@@ -9,7 +9,7 @@ import { AuthService } from '../../core/auth.service';
   selector: 'app-categories',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ReactiveFormsModule, TuiButton, TuiTextfield, TuiSelect, TuiDataList, TuiDataListWrapper, TuiInputColor, TuiLoader],
+  imports: [ReactiveFormsModule, TuiButton, TuiTextfield, TuiSelect, TuiDataListWrapper, TuiInputColor, TuiLoader],
   providers: [tuiItemsHandlersProvider({ stringify: signal((cat: unknown) => (cat as Category).name) })],
   templateUrl: './categories.component.html',
   styleUrl: './categories.component.scss'

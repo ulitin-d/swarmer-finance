@@ -47,9 +47,7 @@
                 <tui-textfield>
                   <label tuiLabel>Parent Category</label>
                   <input tuiSelect formControlName="parentId" placeholder="Select parent" />
-                  <ng-template tuiDataList>
-                    <tui-data-list-wrapper [items]="parentCategories()" />
-                  </ng-template>
+                  <tui-data-list-wrapper *tuiTextfieldDropdown new [items]="parentCategories()" />
                 </tui-textfield>
               }
 
