@@ -62,13 +62,13 @@ export const refreshTokens = async (refreshToken: string): Promise<AuthTokens> =
     if (decoded.type !== 'refresh') {
       throw { statusCode: 401, message: 'Invalid token type' };
     }
-    
+
     const user = await userQueries.getUserById(decoded.userId);
     if (!user) {
       throw { statusCode: 401, message: 'User not found' };
     }
-    
-    return generateTokens(user.id);
+
+    return { ...generateTokens(user.id), user: { id: user.id, email: user.email } };
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'statusCode' in error) throw error;
     throw { statusCode: 401, message: 'Invalid refresh token' };
