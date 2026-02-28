@@ -34,6 +34,7 @@ export interface ApiResponse<T> {
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
+  user?: { id: number; email: string };
 }
 
 export interface JwtPayload {
