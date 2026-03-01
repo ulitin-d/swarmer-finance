@@ -1,9 +1,10 @@
-import { ChangeDetectionStrategy, Component, inject, OnInit, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { TuiButton, TuiLoader, TuiTextfield, tuiItemsHandlersProvider } from '@taiga-ui/core';
 import { TuiDataListWrapper, TuiInputColor, TuiSelect } from '@taiga-ui/kit';
-import { ApiService, Category } from '../../core/api.service';
+import { Category } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
+import { CategoriesState } from '../../core/categories.state';
 
 @Component({
   selector: 'app-categories',
@@ -14,9 +15,9 @@ import { AuthService } from '../../core/auth.service';
   templateUrl: './categories.component.html',
   styleUrl: './categories.component.scss'
 })
-export class CategoriesComponent implements OnInit {
+export class CategoriesComponent {
   authService = inject(AuthService);
-  private apiService = inject(ApiService);
+  categoriesState = inject(CategoriesState);
 
   form = new FormGroup({
     name: new FormControl<string>('', [Validators.required]),
@@ -24,27 +25,10 @@ export class CategoriesComponent implements OnInit {
     color: new FormControl<string>('#000000', [])
   });
 
-  categories = signal<Category[]>([]);
   showDialog = signal(false);
   editingCategory = signal<Category | null>(null);
-  loading = signal(true);
 
-  ngOnInit() {
-    this.loadCategories();
-  }
-
-  loadCategories() {
-    this.loading.set(true);
-    this.apiService.getCategories().subscribe({
-      next: (response) => {
-        if (response.data) this.categories.set(response.data);
-        this.loading.set(false);
-      },
-      error: () => this.loading.set(false)
-    });
-  }
-
-  parentCategories = () => this.categories();
+  parentCategories = () => this.categoriesState.categories();
 
   openDialog(cat?: Category) {
     if (cat) {
@@ -70,24 +54,18 @@ export class CategoriesComponent implements OnInit {
     const editing = this.editingCategory();
     const reqName = name || '';
     const reqColor = color || '#000000';
-    
+
     const request = editing
-      ? this.apiService.updateCategory(editing.id, { name: reqName, color: reqColor })
-      : this.apiService.createCategory({ name: reqName, parentId: parentId!.id, color: reqColor });
-    request.subscribe({ 
-      next: () => { 
-        this.closeDialog(); 
-        this.loadCategories(); 
-      }, 
-      error: console.error 
+      ? this.categoriesState.update(editing.id, { name: reqName, color: reqColor })
+      : this.categoriesState.create({ name: reqName, parentId: parentId!.id, color: reqColor });
+    request.subscribe({
+      next: () => this.closeDialog(),
+      error: console.error
     });
   }
 
   deleteCategory(id: number) {
     if (!confirm('Delete this category?')) return;
-    this.apiService.deleteCategory(id).subscribe({ 
-      next: () => this.loadCategories(), 
-      error: console.error 
-    });
+    this.categoriesState.delete(id).subscribe({ error: console.error });
   }
 }

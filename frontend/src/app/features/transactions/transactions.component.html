@@ -14,15 +14,15 @@
             <label>To</label>
             <input type="date" [formControl]="filterTo" class="form-input">
           </div>
-          <button tuiButton appearance="flat" (click)="loadTransactions()">Apply</button>
+          <button tuiButton appearance="flat" (click)="applyFilters()">Apply</button>
         </div>
       </div>
 
-      @if (loading()) {
+      @if (transactionsState.loading()) {
         <div class="loading">Loading...</div>
-      } @else if (transactions().length > 0) {
+      } @else if (transactionsState.transactions().length > 0) {
         <div class="transactions-list">
-          @for (tx of transactions(); track tx.id) {
+          @for (tx of transactionsState.transactions(); track tx.id) {
             <div class="transaction-item card">
               <div class="tx-category" [style.border-color]="tx.category_color">
                 <span class="category-name">{{ tx.category_name }}</span>
@@ -60,7 +60,7 @@
                 <label>Category</label>
                 <select formControlName="categoryId" class="form-input">
                   <option [value]="null">Select category</option>
-                  @for (cat of leafCategories(); track cat.id) {
+                  @for (cat of categoriesState.leafCategories(); track cat.id) {
                     <option [value]="cat.id">{{ cat.name }}</option>
                   }
                 </select>
