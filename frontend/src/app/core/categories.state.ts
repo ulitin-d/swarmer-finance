@@ -7,8 +7,10 @@ import { AuthService } from './auth.service';
 @Injectable({ providedIn: 'root' })
 export class CategoriesState {
   private readonly api = inject(ApiService);
+  private readonly auth = inject(AuthService);
 
-  private readonly resource = rxResource<Category[], void>({
+  private readonly resource = rxResource<Category[], true>({
+    params: (): true | undefined => this.auth.isAuthenticated() || undefined,
     stream: () => this.api.getCategories().pipe(map(r => r.data ?? [])),
   });
 
@@ -22,9 +24,8 @@ export class CategoriesState {
   });
 
   constructor() {
-    const auth = inject(AuthService);
     effect(() => {
-      if (auth.refreshCount() > 0) {
+      if (this.auth.refreshCount() > 0) {
         untracked(() => this.resource.reload());
       }
     });

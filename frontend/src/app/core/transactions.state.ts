@@ -16,10 +16,11 @@ interface TransactionFilters {
 @Injectable({ providedIn: 'root' })
 export class TransactionsState {
   private readonly api = inject(ApiService);
+  private readonly auth = inject(AuthService);
   private readonly _filters = signal<TransactionFilters>({});
 
   private readonly resource = rxResource<TransactionListResponse, TransactionFilters>({
-    params: () => this._filters(),
+    params: () => this.auth.isAuthenticated() ? this._filters() : undefined,
     stream: ({ params }) => this.api.getTransactions(params).pipe(
       map(r => r.data ?? { transactions: [], total: 0 })
     ),
@@ -30,9 +31,8 @@ export class TransactionsState {
   readonly loading = this.resource.isLoading;
 
   constructor() {
-    const auth = inject(AuthService);
     effect(() => {
-      if (auth.refreshCount() > 0) {
+      if (this.auth.refreshCount() > 0) {
         untracked(() => this.resource.reload());
       }
     });
