@@ -1,6 +1,5 @@
-import { Injectable, computed, effect, inject, signal, untracked } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
-import { map, tap, of } from 'rxjs';
+import { Injectable, computed, effect, inject, resource, signal, untracked } from '@angular/core';
+import { firstValueFrom, tap } from 'rxjs';
 import { ApiService, Transaction, TransactionListResponse } from './api.service';
 import { AuthService } from './auth.service';
 
@@ -19,11 +18,13 @@ export class TransactionsState {
   private readonly auth = inject(AuthService);
   private readonly _filters = signal<TransactionFilters>({});
 
-  private readonly resource = rxResource<TransactionListResponse, boolean>({
-    params: () => this.auth.isAuthenticated(),
-    stream: ({ params }) => params ? this.api.getTransactions(this._filters()).pipe(
-      map(r => r.data ?? { transactions: [], total: 0 })
-    ) : of({ transactions: [], total: 0 })
+  private readonly resource = resource<TransactionListResponse, { isAuthenticated: boolean, filters: TransactionFilters }>({
+    params: () => ({ isAuthenticated: this.auth.isAuthenticated(), filters: this._filters() }),
+    loader: async ({ params }) => {
+      if (!params.isAuthenticated) return { transactions: [], total: 0 };
+      const r = await firstValueFrom(this.api.getTransactions(params.filters));
+      return r.data ?? { transactions: [], total: 0 };
+    }
   });
 
   readonly transactions = computed(() => this.resource.value()?.transactions ?? []);

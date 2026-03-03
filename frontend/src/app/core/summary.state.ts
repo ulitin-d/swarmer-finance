@@ -1,6 +1,5 @@
-import { Injectable, computed, effect, inject, untracked } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
-import { map, of } from 'rxjs';
+import { Injectable, computed, effect, inject, resource, untracked } from '@angular/core';
+import { firstValueFrom } from 'rxjs';
 import { ApiService, Summary } from './api.service';
 import { AuthService } from './auth.service';
 
@@ -9,9 +8,13 @@ export class SummaryState {
   private readonly api = inject(ApiService);
   private readonly auth = inject(AuthService);
 
-  private readonly resource = rxResource<Summary | null, boolean>({
+  private readonly resource = resource<Summary | null, boolean>({
     params: () => this.auth.isAuthenticated(),
-    stream: ({params}) => params ? this.api.getSummary().pipe(map(r => r.data ?? null)) : of(null)
+    loader: async ({ params }) => {
+      if (!params) return null;
+      const r = await firstValueFrom(this.api.getSummary());
+      return r.data ?? null;
+    }
   });
   
 
