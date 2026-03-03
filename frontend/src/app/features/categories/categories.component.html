@@ -4,10 +4,10 @@
         <button tuiButton (click)="openDialog()">Add Category</button>
       </header>
 
-      <tui-loader [showLoader]="loading()">
-        @if (categories().length > 0) {
+      <tui-loader [showLoader]="categoriesState.loading()">
+        @if (categoriesState.categories().length > 0) {
           <div class="categories-tree">
-            @for (root of categories(); track root.id) {
+            @for (root of categoriesState.categories(); track root.id) {
               <div class="root-category">
                 <div class="category-row system">
                   <span class="category-icon" [style.background]="root.color">●</span>

@@ -20,9 +20,9 @@
 
       <div class="card summary-card">
         <h2>Current Month Summary</h2>
-        @if (loading()) {
+        @if (summaryState.loading()) {
           <div class="loading">Loading...</div>
-        } @else if (summary(); as s) {
+        } @else if (summaryState.summary(); as s) {
           <div class="period">
             {{ s.period.from | date:'mediumDate' }} - {{ s.period.to | date:'mediumDate' }}
           </div>
@@ -42,7 +42,7 @@
           </div>
         } @else {
           <p>Unable to load summary</p>
-          <button tuiButton (click)="loadSummary()">Retry</button>
+          <button tuiButton (click)="summaryState.reload()">Retry</button>
         }
       </div>
     </div>
