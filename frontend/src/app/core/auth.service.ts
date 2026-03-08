@@ -24,11 +24,9 @@ export interface ApiResponse<T> {
 export class AuthService {
   private accessToken = signal<string | null>(localStorage.getItem('accessToken'));
   private userSignal = signal<User | null>(null);
-  private readonly _refreshCount = signal(0);
 
   readonly isAuthenticated = computed(() => !!this.accessToken());
   readonly user = computed(() => this.userSignal());
-  readonly refreshCount = this._refreshCount.asReadonly();
 
   constructor(private http: HttpClient, private router: Router) {
     const token = localStorage.getItem('accessToken');
@@ -78,8 +76,7 @@ export class AuthService {
       .post<ApiResponse<AuthResponse>>('/api/auth/refresh', { refreshToken: token })
       .pipe(
         tap(response => this.handleAuth(response.data)),
-        map(response => response.data!.accessToken),
-        tap(() => this._refreshCount.update(n => n + 1)),
+        map(response => response.data!.accessToken)
       );
   }
 
