@@ -1,7 +1,8 @@
 import { Injectable, computed, effect, inject, resource, untracked } from '@angular/core';
 import { firstValueFrom, tap } from 'rxjs';
-import { ApiService, Category } from './api.service';
 import { AuthService } from './auth.service';
+import { Category } from '../models/category';
+import { ApiService } from './api.service';
 
 @Injectable({ providedIn: 'root' })
 export class CategoriesState {
@@ -19,20 +20,6 @@ export class CategoriesState {
 
   readonly categories = computed(() => this.resource.value() ?? []);
   readonly loading = this.resource.isLoading;
-
-  readonly leafCategories = computed(() => {
-    const getLeaves = (items: Category[]): Category[] =>
-      items.flatMap(item => item.children?.length ? getLeaves(item.children) : [item]);
-    return getLeaves(this.categories());
-  });
-
-  constructor() {
-    effect(() => {
-      if (this.auth.refreshCount() > 0) {
-        untracked(() => this.resource.reload());
-      }
-    });
-  }
 
   reload() {
     this.resource.reload();
