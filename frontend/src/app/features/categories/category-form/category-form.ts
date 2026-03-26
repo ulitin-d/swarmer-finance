@@ -34,15 +34,15 @@ export class CategoryForm {
   readonly treeMap = new Map<Category, boolean>();
 
   readonly parentOptions = computed(() => {
-    const currentId = this.context.data?.id;
-    if (!currentId) return this.categories();
-    return this.categories().filter(c => c.id !== currentId);
+    if (!this.context.data?.id) return this.categories();
+    const root_id = this.context.data.root_id;
+    return this.categories().filter(c => c.root_id === root_id);
   });
 
   readonly form = new FormGroup({
-    id: new FormControl<number>(this.context.data?.id ?? TransactionType.Expense, { nonNullable: true, validators: [Validators.required] }),
+    id: new FormControl<number | null>(this.context.data?.id ?? null),
+    parentId: new FormControl<number>(this.context.data?.parent_id ?? TransactionType.Expense, { nonNullable: true, validators: [Validators.required] }),
     name: new FormControl<string>(this.context.data?.name ?? '', { nonNullable: true, validators: [Validators.required] }),
-    parentId: new FormControl<number | null>(this.context.data?.parent_id ?? null),
     color: new FormControl<string>(this.context.data?.color ?? '#14aa00', { nonNullable: true }),
     icon: new FormControl<string>(this.context.data?.icon ?? 'circle', { nonNullable: true }),
   });
@@ -62,10 +62,10 @@ export class CategoryForm {
       this.loading.set(true);
       this.error.set(null);
 
-      const { id, name, parentId, color, icon } = this.form.getRawValue();
+      const { id, parentId, name, color, icon } = this.form.getRawValue();
       const obs = !!id
         ? this.categoriesState.update(id, { name, color, icon })
-        : this.categoriesState.create({ name, parentId: parentId ?? 0, color, icon });
+        : this.categoriesState.create({ name, parentId, color, icon });
       const responce = await firstValueFrom(obs);
       this.context.completeWith(responce.data);
     } catch (err) { }
