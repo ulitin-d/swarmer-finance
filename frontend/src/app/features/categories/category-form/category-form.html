@@ -1,18 +1,19 @@
 <form [formGroup]="form" (ngSubmit)="onSubmit()" class="form" tuiTextfieldSize="m">
-    <tui-textfield>
-        <label tuiLabel>Name</label>
-        <input tuiTextfield formControlName="name" placeholder="Category name" />
-    </tui-textfield>
-
-    <tui-textfield tuiChevron [stringify]="stringifyCategory" [tuiTextfieldCleaner]="false">
+    <tui-textfield tuiChevron [tuiTextfieldCleaner]="false" [stringify]="stringifyCategory"
+        [identityMatcher]="identityMatcher">
         <label tuiLabel>Parent Category</label>
-        <input tuiSelect formControlName="parentId" />
+        <input tuiSelect formControlName="parent" />
         <tui-data-list *tuiTextfieldDropdown>
             @for (item of parentOptions(); track item.id) {
             <tui-tree [childrenHandler]="treeHandler()" [content]="treeNodeContent" [map]="treeMap"
                 [tuiTreeController]="false" [value]="item" />
             }
         </tui-data-list>
+    </tui-textfield>
+
+    <tui-textfield>
+        <label tuiLabel>Name</label>
+        <input tuiTextfield formControlName="name" placeholder="Category name" />
     </tui-textfield>
 
     <div class="row">
@@ -22,20 +23,39 @@
         </tui-textfield>
         <tui-icon [icon]="'@tui.' + form.value.icon" [style.color]="form.value.color" />
     </div>
-    <tui-textfield>
-        <label tuiLabel>Icon</label>
-        <input tuiTextfield formControlName="icon" placeholder="e.g. home, star, wallet" />
-    </tui-textfield>
+    <div class="icon-picker">
+        <span class="icon-label">Icon</span>
+        <div class="icon-grid">
+            @if(parent()?.root_id === 1 ) {
+            <button type="button" class="icon-btn" [class.selected]="form.value.icon === 'circle-plus'"
+                [attr.aria-label]="'circle-plus'" (click)="form.controls.icon.setValue('circle-plus')">
+                <tui-icon [icon]="'@tui.' + 'circle-plus'" />
+            </button>
+            }
+            @if(parent()?.root_id === 2 ) {
+            <button type="button" class="icon-btn" [class.selected]="form.value.icon === 'circle-minus'"
+                [attr.aria-label]="'circle-minus'" (click)="form.controls.icon.setValue('circle-minus')">
+                <tui-icon [icon]="'@tui.' + 'circle-minus'" />
+            </button>
+            }
+            @for (icon of predefinedIcons; track icon) {
+            <button type="button" class="icon-btn" [class.selected]="form.value.icon === icon" [attr.aria-label]="icon"
+                (click)="form.controls.icon.setValue(icon)">
+                <tui-icon [icon]="'@tui.' + icon" />
+            </button>
+            }
+        </div>
+    </div>
 
     <tui-error [error]="error()" />
 
     <button tuiButton size="m" type="submit" [disabled]="loading()">
-        {{ loading() ? 'Saving...' : (!!form.value.id ? 'Save Changes' : 'Create Category') }}
+        {{ loading() ? 'Saving...' : (!!categoryId() ? 'Save Changes' : 'Create Category') }}
     </button>
 </form>
 
 <ng-template #treeNodeContent let-item>
-    <button new tuiOption type="button" [value]="item.id" class="tree-option">
+    <button new tuiOption type="button" [value]="item" class="tree-option">
         <tui-icon [icon]="'@tui.' + item.icon" [style.color]="item.color" />
         {{ item.name }}
     </button>

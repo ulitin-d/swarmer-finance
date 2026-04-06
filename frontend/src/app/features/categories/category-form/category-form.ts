@@ -8,9 +8,10 @@ import { POLYMORPHEUS_CONTEXT } from '@taiga-ui/polymorpheus';
 import type { TuiDialogContext } from '@taiga-ui/core';
 import { CategoriesState } from '../../../core/categories.state';
 import type { Category } from '../../../models/category';
-import { flattenCategories } from '../../../models/category';
-import { firstValueFrom } from 'rxjs';
+import { findCategoryById } from '../../../models/category';
+import { firstValueFrom, pipe } from 'rxjs';
 import { TransactionType } from '../../../models/transaction';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 
 @Component({
   selector: 'app-category-form',
@@ -40,20 +41,46 @@ export class CategoryForm {
   });
 
   readonly form = new FormGroup({
-    id: new FormControl<number | null>(this.context.data?.id ?? null),
-    parentId: new FormControl<number>(this.context.data?.parent_id ?? TransactionType.Expense, { nonNullable: true, validators: [Validators.required] }),
+    parent: new FormControl<Category | null>(findCategoryById(this.context.data?.parent_id ?? TransactionType.Expense, this.categories()), { nonNullable: true, validators: [Validators.required] }),
     name: new FormControl<string>(this.context.data?.name ?? '', { nonNullable: true, validators: [Validators.required] }),
     color: new FormControl<string>(this.context.data?.color ?? '#14aa00', { nonNullable: true }),
     icon: new FormControl<string>(this.context.data?.icon ?? 'circle', { nonNullable: true }),
   });
 
-  readonly loading = signal(false);
-  readonly error = signal<TuiValidationError | null>(null);
+  readonly predefinedIcons = [
+    'home', 'car', 'shopping-cart', 'heart-pulse', 'briefcase',
+    'graduation-cap', 'plane', 'gift', 'music', 'gamepad-2',
+    'coffee', 'zap', 'droplets', 'pill', 'briefcase-medical',
+    'dumbbell', 'wallet', 'utensils', 'baby', 'star', 'badge-dollar-sign', 'badge-euro', 'badge-russian-ruble'
+  ] as const;
 
-  readonly stringifyCategory: TuiStringHandler<number | null> = (id) => {
-    if (id === null) return 'None (top-level)';
-    return flattenCategories(this.categories()).find(c => c.id === id)?.name ?? String(id);
+  readonly loading = signal(false);
+  readonly categoryId = signal(this.context.data?.id ?? null);
+  readonly error = signal<TuiValidationError | null>(null);
+  readonly parent = toSignal(this.form.controls.parent.valueChanges, { initialValue: this.form.controls.parent.value });
+
+  readonly stringifyCategory: TuiStringHandler<Category | null> = (item) => {
+    return item?.fullName ?? 'None (top-level)';
   };
+  readonly identityMatcher = (a: Category | null, b: Category | null): boolean => a?.id === b?.id;
+
+  constructor() {
+    this.form.controls.parent.valueChanges.pipe(takeUntilDestroyed()).subscribe(parent => this.onParentChange(parent));
+
+    let parent_id = this.form.controls.parent.value?.parent_id;
+    while (parent_id) {
+      const parent = findCategoryById(parent_id, this.categories());
+      if (!parent) break;
+      this.treeMap.set(parent, true);
+      parent_id = parent.parent_id;
+    }
+  }
+
+  onParentChange(parent: Category | null): void {
+    if (!!this.context.data?.id || !parent) return;
+    this.form.controls.color.setValue(parent.color);
+    this.form.controls.icon.setValue(parent.icon);
+  }
 
   async onSubmit() {
     if (this.form.invalid) return;
@@ -62,10 +89,11 @@ export class CategoryForm {
       this.loading.set(true);
       this.error.set(null);
 
-      const { id, parentId, name, color, icon } = this.form.getRawValue();
+      const id = this.context.data?.id;
+      const { parent, name, color, icon } = this.form.getRawValue();
       const obs = !!id
         ? this.categoriesState.update(id, { name, color, icon })
-        : this.categoriesState.create({ name, parentId, color, icon });
+        : this.categoriesState.create({ name, parentId: parent?.id ?? TransactionType.Expense, color, icon });
       const responce = await firstValueFrom(obs);
       this.context.completeWith(responce.data);
     } catch (err) { }

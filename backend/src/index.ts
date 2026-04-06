@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import authRoutes from './routes/auth';
 import categoryRoutes from './routes/categories';
 import transactionRoutes from './routes/transactions';
-import summaryRoutes from './routes/summary';
+import accountRoutes from './routes/accounts';
 import { errorHandler } from './middleware/error';
 
 dotenv.config();
@@ -25,7 +25,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/transactions', transactionRoutes);
-app.use('/api/summary', summaryRoutes);
+app.use('/api/accounts', accountRoutes);
 
 app.use(errorHandler);
 

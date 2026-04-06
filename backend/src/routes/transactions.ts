@@ -9,8 +9,12 @@ const router = Router();
 router.use(authMiddleware);
 
 const createTransactionSchema = z.object({
-  categoryId: z.number().int().positive(),
-  amount: z.number().positive(),
+  categoryId: z.number().int().positive().optional(),
+  debitAccountId: z.number().int().positive().optional(),
+  creditAccountId: z.number().int().positive().optional(),
+  debit: z.number().positive(),
+  credit: z.number().positive(),
+  currency: z.string().min(1).optional(),
   date: z.string(),
   description: z.string().optional(),
 });
@@ -21,7 +25,7 @@ const filtersSchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   category: z.coerce.number().int().positive().optional(),
-  type: z.enum(['income', 'expense']).optional(),
+  type: z.enum(['income', 'expense', 'transfer']).optional(),
   page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
 });
@@ -32,11 +36,10 @@ router.get('/', validate(filtersSchema), async (req: AuthRequest, res, next) => 
       from: req.query.from as string | undefined,
       to: req.query.to as string | undefined,
       category: req.query.category ? parseInt(req.query.category as string, 10) : undefined,
-      type: req.query.type as 'income' | 'expense' | undefined,
+      type: req.query.type as 'income' | 'expense' | 'transfer' | undefined,
       page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
     };
-    
     const result = await transactionService.getTransactions(req.userId!, filters);
     res.json({ data: result, error: null });
   } catch (error) {
@@ -46,14 +49,7 @@ router.get('/', validate(filtersSchema), async (req: AuthRequest, res, next) => 
 
 router.post('/', validate(createTransactionSchema), async (req: AuthRequest, res, next) => {
   try {
-    const { categoryId, amount, date, description } = req.body;
-    const transaction = await transactionService.createTransaction(
-      req.userId!,
-      categoryId,
-      amount,
-      date,
-      description
-    );
+    const transaction = await transactionService.createTransaction(req.userId!, req.body);
     res.json({ data: transaction, error: null });
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'statusCode' in error) {
@@ -67,15 +63,7 @@ router.post('/', validate(createTransactionSchema), async (req: AuthRequest, res
 router.put('/:id', validate(updateTransactionSchema), async (req: AuthRequest, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { categoryId, amount, date, description } = req.body;
-    const transaction = await transactionService.updateTransaction(
-      id,
-      req.userId!,
-      categoryId,
-      amount,
-      date,
-      description
-    );
+    const transaction = await transactionService.updateTransaction(id, req.userId!, req.body);
     res.json({ data: transaction, error: null });
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'statusCode' in error) {
