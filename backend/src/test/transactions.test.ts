@@ -10,6 +10,7 @@ describe('Transactions API', () => {
   let incomeCategoryId: number;
   let expenseCategoryId: number;
   let testAccountId: number;
+  let secondAccountId: number;
 
   beforeAll(async () => {
     const email = `tx${Date.now()}@example.com`;
@@ -41,6 +42,13 @@ describe('Transactions API', () => {
       [testUserId]
     );
     testAccountId = accountResult.rows[0].id;
+
+    const secondAccountResult = await pool.query(
+      `INSERT INTO accounts (user_id, name, currency, start_balance)
+       VALUES ($1, 'Second Account', 'EUR', 0) RETURNING id`,
+      [testUserId]
+    );
+    secondAccountId = secondAccountResult.rows[0].id;
   });
 
   afterAll(async () => {
@@ -54,17 +62,17 @@ describe('Transactions API', () => {
     beforeEach(async () => {
       await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
 
-      // Income: credit_account_id filled, debit_account_id null
+      // Income on testAccount: credit_account_id filled, debit_account_id null
       await pool.query(
-        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, currency, date, description)
-         VALUES ($1, $2, $3, 1000, 1000, 'USD', '2026-02-01', 'Test income')`,
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date, description)
+         VALUES ($1, $2, $3, 1000, 1000, '2026-02-01', 'Test income')`,
         [testUserId, incomeCategoryId, testAccountId]
       );
-      // Expense: debit_account_id filled, credit_account_id null
+      // Expense on secondAccount: debit_account_id filled, credit_account_id null
       await pool.query(
-        `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, currency, date, description)
-         VALUES ($1, $2, $3, 50, 50, 'USD', '2026-02-15', 'Test expense')`,
-        [testUserId, expenseCategoryId, testAccountId]
+        `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, date, description, payee)
+         VALUES ($1, $2, $3, 50, 50, '2026-02-15', 'Groceries run', 'Supermarket')`,
+        [testUserId, expenseCategoryId, secondAccountId]
       );
     });
 
@@ -74,8 +82,8 @@ describe('Transactions API', () => {
         .set({ Authorization: `Bearer ${token}` });
 
       expect(res.status).toBe(200);
-      expect(res.body.data.transactions).toBeInstanceOf(Array);
-      expect(res.body.data.total).toBe(2);
+      expect(res.body.data).toBeInstanceOf(Array);
+      expect(res.body.data.length).toBe(2);
     });
 
     it('should filter transactions by date range', async () => {
@@ -84,7 +92,80 @@ describe('Transactions API', () => {
         .set({ Authorization: `Bearer ${token}` });
 
       expect(res.status).toBe(200);
-      expect(res.body.data.transactions.length).toBe(1);
+      expect(res.body.data.length).toBe(1);
+    });
+
+    it('should filter by single account', async () => {
+      const res = await request(app)
+        .get(`/api/transactions?accounts=${testAccountId}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(1);
+      expect(res.body.data[0].credit_account.id).toBe(testAccountId);
+    });
+
+    it('should filter by multiple accounts (OR logic)', async () => {
+      const res = await request(app)
+        .get(`/api/transactions?accounts=${testAccountId}&accounts=${secondAccountId}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(2);
+    });
+
+    it('should filter by multiple categories (OR logic)', async () => {
+      const res = await request(app)
+        .get(`/api/transactions?categories=${incomeCategoryId}&categories=${expenseCategoryId}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(2);
+    });
+
+    it('should filter by single category', async () => {
+      const res = await request(app)
+        .get(`/api/transactions?categories=${expenseCategoryId}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(1);
+    });
+
+    it('should filter by details matching description', async () => {
+      const res = await request(app)
+        .get('/api/transactions?details=Groceries')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(1);
+      expect(res.body.data[0].description).toBe('Groceries run');
+    });
+
+    it('should filter by details matching payee', async () => {
+      const res = await request(app)
+        .get('/api/transactions?details=supermarket')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(1);
+    });
+
+    it('should support offset-based pagination', async () => {
+      const res = await request(app)
+        .get('/api/transactions?offset=1&limit=1')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(1);
+    });
+
+    it('should reject invalid offset', async () => {
+      const res = await request(app)
+        .get('/api/transactions?offset=-1')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(400);
     });
 
     it('should require authentication', async () => {
@@ -109,17 +190,55 @@ describe('Transactions API', () => {
           creditAccountId: testAccountId,
           debit: 500,
           credit: 500,
+          scale: 2,
           date: '2026-02-18',
           description: 'Test income',
-          currency: 'USD',
         });
 
       expect(res.status).toBe(200);
       expect(Number(res.body.data.debit)).toBe(500);
-      expect(res.body.data.currency).toBe('USD');
     });
 
-    it('should create a transaction with non-standard currency', async () => {
+    it('returns the date as the plain calendar day it was stored as', async () => {
+      // A DATE parsed into a local-midnight Date serialized as the previous
+      // UTC day in any timezone ahead of UTC.
+      const created = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          categoryId: incomeCategoryId,
+          creditAccountId: testAccountId,
+          debit: 500,
+          credit: 500,
+          date: '2026-02-18',
+        });
+      expect(created.body.data.date).toBe('2026-02-18');
+
+      const list = await request(app)
+        .get('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` });
+      expect(list.body.data.map((t: { date: string }) => t.date)).toEqual(['2026-02-18']);
+    });
+
+    it('should reject expense with debit != credit', async () => {
+      // debit != credit
+      // would silently lose value between sides — must be rejected.
+      const res = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          categoryId: expenseCategoryId,
+          debitAccountId: testAccountId,
+          debit: 100,
+          credit: 90,
+          date: '2026-02-18',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/debit to equal credit/);
+    });
+
+    it('should reject income with debit != credit', async () => {
       const res = await request(app)
         .post('/api/transactions')
         .set({ Authorization: `Bearer ${token}` })
@@ -127,45 +246,35 @@ describe('Transactions API', () => {
           categoryId: incomeCategoryId,
           creditAccountId: testAccountId,
           debit: 100,
+          credit: 90,
+          date: '2026-02-18',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/debit to equal credit/);
+    });
+
+    it('should reject a transaction against a soft-deleted account', async () => {
+      const softDeletedResult = await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance, deleted)
+         VALUES ($1, 'Deleted Account', 'USD', 0, true) RETURNING id`,
+        [testUserId]
+      );
+      const softDeletedAccountId = softDeletedResult.rows[0].id;
+
+      const res = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          categoryId: expenseCategoryId,
+          debitAccountId: softDeletedAccountId,
+          debit: 100,
           credit: 100,
           date: '2026-02-18',
-          currency: 'USDT',
         });
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.currency).toBe('USDT');
-    });
-
-    it('should require currency for income', async () => {
-      const res = await request(app)
-        .post('/api/transactions')
-        .set({ Authorization: `Bearer ${token}` })
-        .send({
-          categoryId: incomeCategoryId,
-          creditAccountId: testAccountId,
-          debit: 500,
-          credit: 500,
-          date: '2026-02-18',
-        });
-
-      expect(res.status).toBe(400);
-    });
-
-    it('should validate leaf category', async () => {
-      const res = await request(app)
-        .post('/api/transactions')
-        .set({ Authorization: `Bearer ${token}` })
-        .send({
-          categoryId: 1,
-          creditAccountId: testAccountId,
-          debit: 500,
-          credit: 500,
-          date: '2026-02-18',
-          currency: 'USD',
-        });
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toContain('leaf category');
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/Cannot use this debit account/);
     });
 
     it('should create a transfer transaction', async () => {
@@ -188,8 +297,136 @@ describe('Transactions API', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.data.category_id).toBeNull();
-      expect(res.body.data.currency).toBeNull();
+      expect(res.body.data.category).toBeNull();
+    });
+
+    it('should reject same-currency transfer with debit != credit', async () => {
+      // Create a second USD account so both sides share a currency.
+      const secondAccountResult = await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance)
+         VALUES ($1, 'Same Currency USD', 'USD', 0) RETURNING id`,
+        [testUserId]
+      );
+      const secondUsdAccountId = secondAccountResult.rows[0].id;
+
+      const res = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          debitAccountId: testAccountId,
+          creditAccountId: secondUsdAccountId,
+          debit: 100,
+          credit: 90, // unequal — value would silently disappear
+          date: '2026-02-18',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/debit to equal credit/);
+
+      // cleanup
+      await pool.query('DELETE FROM accounts WHERE id = $1', [secondUsdAccountId]);
+    });
+
+    it('should accept same-currency transfer with debit === credit', async () => {
+      const secondAccountResult = await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance)
+         VALUES ($1, 'Same Currency USD 2', 'USD', 0) RETURNING id`,
+        [testUserId]
+      );
+      const secondUsdAccountId = secondAccountResult.rows[0].id;
+
+      const res = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          debitAccountId: testAccountId,
+          creditAccountId: secondUsdAccountId,
+          debit: 100,
+          credit: 100,
+          date: '2026-02-18',
+        });
+
+      expect(res.status).toBe(200);
+
+      // cleanup — delete transactions referencing this account first
+      await pool.query('DELETE FROM transactions WHERE debit_account_id = $1 OR credit_account_id = $1', [secondUsdAccountId]);
+      await pool.query('DELETE FROM accounts WHERE id = $1', [secondUsdAccountId]);
+    });
+  });
+
+  describe('Default categorization (Uncategorized)', () => {
+    beforeEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+    });
+
+    it('should default an expense without categoryId to Uncategorized', async () => {
+      const res = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          debitAccountId: testAccountId,
+          debit: 25,
+          credit: 25,
+          date: '2026-02-20',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.category.id).toBe(4);
+      expect(res.body.data.category.name).toBe('Uncategorized');
+    });
+
+    it('should default an income without categoryId to Uncategorized', async () => {
+      const res = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          creditAccountId: testAccountId,
+          debit: 25,
+          credit: 25,
+          date: '2026-02-20',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.category.id).toBe(3);
+      expect(res.body.data.category.name).toBe('Uncategorized');
+    });
+
+    it('should default to Uncategorized when categoryId is explicitly cleared on update', async () => {
+      const created = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          categoryId: expenseCategoryId,
+          debitAccountId: testAccountId,
+          debit: 25,
+          credit: 25,
+          date: '2026-02-20',
+        });
+      expect(created.body.data.category.id).toBe(expenseCategoryId);
+
+      const res = await request(app)
+        .put(`/api/transactions/${created.body.data.id}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ categoryId: null });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.category.id).toBe(4);
+    });
+
+    it('should still leave transfers without a category', async () => {
+      const res = await request(app)
+        .post('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          debitAccountId: testAccountId,
+          creditAccountId: secondAccountId,
+          debit: 25,
+          credit: 25,
+          date: '2026-02-20',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.category).toBeNull();
     });
   });
 
@@ -200,8 +437,8 @@ describe('Transactions API', () => {
       await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
 
       const result = await pool.query(
-        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, currency, date, description)
-         VALUES ($1, $2, $3, 100, 100, 'USD', '2026-02-01', 'Original')
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date, description)
+         VALUES ($1, $2, $3, 100, 100, '2026-02-01', 'Original')
          RETURNING id`,
         [testUserId, incomeCategoryId, testAccountId]
       );
@@ -215,12 +452,192 @@ describe('Transactions API', () => {
         .send({
           debit: 200,
           credit: 200,
-          currency: 'EUR',
         });
 
       expect(res.status).toBe(200);
       expect(Number(res.body.data.debit)).toBe(200);
-      expect(res.body.data.currency).toBe('EUR');
+    });
+
+    it('should reject update that would create  debit/credit imbalance', async () => {
+      // The transaction was created with debit != credit
+      // would violate the same-currency contract.
+      const res = await request(app)
+        .put(`/api/transactions/${transactionId}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          debit: 200,
+          credit: 100,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/debit to equal credit/);
+    });
+
+  });
+
+  describe('GET /api/transactions — running balances', () => {
+    beforeEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+    });
+
+    it('attaches balance to account when no sequential-breaking filters are active', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 5000, 5000, '2026-03-01')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      const res = await request(app)
+        .get('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].credit_account.balance).toBeDefined();
+      expect(typeof res.body.data[0].credit_account.balance).toBe('number');
+    });
+
+    it('does not attach balance when details filter is active', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date, description)
+         VALUES ($1, $2, $3, 5000, 5000, '2026-03-01', 'Salary')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      const res = await request(app)
+        .get('/api/transactions?details=Salary')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].credit_account.balance).toBeUndefined();
+    });
+
+    it('does not attach balance when category filter is active', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 5000, 5000, '2026-03-01')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      const res = await request(app)
+        .get(`/api/transactions?categories=${incomeCategoryId}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].credit_account.balance).toBeUndefined();
+    });
+
+    it('does not attach balance when type filter is active', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 5000, 5000, '2026-03-01')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      const res = await request(app)
+        .get('/api/transactions?type=income')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].credit_account.balance).toBeUndefined();
+    });
+
+    it('computes correct running balances across multiple transactions', async () => {
+      // Account starts at 0 (from beforeAll). Two incomes: 3000 then 2000.
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date, created_at)
+         VALUES
+           ($1, $2, $3, 3000, 3000, '2026-03-01', '2026-03-01 09:00:00'),
+           ($1, $2, $3, 2000, 2000, '2026-03-10', '2026-03-10 09:00:00')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      const res = await request(app)
+        .get('/api/transactions')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      // Transactions arrive DESC: [Mar 10 (+2000), Mar 1 (+3000)]
+      const [newer, older] = res.body.data;
+      // After Mar 10: 0 + 30 + 20 = 50
+      expect(newer.credit_account.balance).toBe(50);
+      // After Mar 1: 0 + 30 = 30
+      expect(older.credit_account.balance).toBe(30);
+    });
+
+    it('computes correct balance on page 2 without including page 1 transactions', async () => {
+      // Three incomes: 1000 (oldest), 2000 (middle), 3000 (newest)
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date, created_at)
+         VALUES
+           ($1, $2, $3, 1000, 1000, '2026-04-01', '2026-04-01 08:00:00'),
+           ($1, $2, $3, 2000, 2000, '2026-04-10', '2026-04-10 08:00:00'),
+           ($1, $2, $3, 3000, 3000, '2026-04-20', '2026-04-20 08:00:00')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      // Page 2: offset=1, limit=1 → the middle transaction (2000 on Apr 10)
+      const res = await request(app)
+        .get('/api/transactions?offset=1&limit=1')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(1);
+      // After Apr 10: 0 + 10 + 20 = 30 (Apr 20 transaction is NOT included)
+      expect(res.body.data[0].credit_account.balance).toBe(30);
+    });
+
+    it('computes correct balance when same-date transactions span a page boundary', async () => {
+      // Three same-date incomes (100, 200, 300), newest created_at first.
+      // Page size 2: page 1 = [300, 200], page 2 = [100].
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date, created_at)
+         VALUES
+           ($1, $2, $3, 100, 100, '2026-05-01', '2026-05-01 08:00:00'),
+           ($1, $2, $3, 200, 200, '2026-05-01', '2026-05-01 09:00:00'),
+           ($1, $2, $3, 300, 300, '2026-05-01', '2026-05-01 10:00:00')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      const page1 = await request(app)
+        .get('/api/transactions?offset=0&limit=2')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(page1.status).toBe(200);
+      expect(page1.body.data.length).toBe(2);
+      // After 300 (10:00): 0 + 1 + 2 + 3 = 6
+      expect(page1.body.data[0].credit_account.balance).toBe(6);
+      // After 200 (09:00): 0 + 1 + 2 = 3
+      expect(page1.body.data[1].credit_account.balance).toBe(3);
+
+      const page2 = await request(app)
+        .get('/api/transactions?offset=2&limit=2')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(page2.status).toBe(200);
+      expect(page2.body.data.length).toBe(1);
+      // After 100 (08:00): 0 + 1 = 1
+      expect(page2.body.data[0].credit_account.balance).toBe(1);
+    });
+
+    it('computes correct balance when a page boundary splits rows sharing a sub-millisecond created_at', async () => {
+      // An import inserts every row with the same microsecond created_at,
+      // so id alone orders them. A JS Date would round that timestamp to
+      // milliseconds, which must not drop the older same-date rows.
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date, created_at)
+         VALUES
+           ($1, $2, $3, 100, 100, '2026-06-01', '2026-06-01 08:00:00.123456'),
+           ($1, $2, $3, 200, 200, '2026-06-01', '2026-06-01 08:00:00.123456')`,
+        [testUserId, incomeCategoryId, testAccountId]
+      );
+
+      const res = await request(app)
+        .get('/api/transactions?offset=0&limit=1')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      // After 200 (higher id): 0 + 1 + 2 = 3
+      expect(res.body.data[0].credit_account.balance).toBe(3);
     });
   });
 
@@ -231,8 +648,8 @@ describe('Transactions API', () => {
       await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
 
       const result = await pool.query(
-        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, currency, date)
-         VALUES ($1, $2, $3, 100, 100, 'USD', '2026-02-01')
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 100, 100, '2026-02-01')
          RETURNING id`,
         [testUserId, incomeCategoryId, testAccountId]
       );
@@ -246,6 +663,34 @@ describe('Transactions API', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.success).toBe(true);
+    });
+  });
+
+  describe('category constraint', () => {
+    const insert = (categoryId: number | null, debitId: number | null, creditId: number | null) =>
+      pool.query(
+        `INSERT INTO transactions (user_id, category_id, debit_account_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, $4, 100, 100, '2026-03-01')`,
+        [testUserId, categoryId, debitId, creditId]
+      );
+
+    afterEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+    });
+
+    it('rejects an expense or income without a category', async () => {
+      await expect(insert(null, testAccountId, null)).rejects.toThrow(/chk_transactions_category/);
+      await expect(insert(null, null, testAccountId)).rejects.toThrow(/chk_transactions_category/);
+    });
+
+    it('rejects a transfer with a category', async () => {
+      await expect(insert(expenseCategoryId, testAccountId, secondAccountId)).rejects.toThrow(/chk_transactions_category/);
+    });
+
+    it('accepts each type in its documented shape', async () => {
+      await insert(expenseCategoryId, testAccountId, null);
+      await insert(incomeCategoryId, null, testAccountId);
+      await insert(null, testAccountId, secondAccountId);
     });
   });
 });

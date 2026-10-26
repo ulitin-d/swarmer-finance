@@ -1,14 +1,34 @@
-<span>Swarmer Finance</span>
+<span class="title">Swarmer Finance</span>
+@if(authService.isAuthenticated()) {
+<button tuiIconButton tuiTheme="dark" appearance="flat-grayscale" size="xs" (click)="reload()" [iconStart]="'@tui.refresh-cw'" aria-label="Reload"></button>
+<button tuiIconButton tuiTheme="dark" appearance="flat-grayscale" size="xs" (click)="addTransaction()" [iconStart]="'@tui.diff'" aria-label="Add transaction" [disabled]="accountState.transferTargets().length === 0"></button>
+}
+@if(authService.isAuthenticated() && canWrite()) {
+<button tuiIconButton tuiTheme="dark" appearance="flat-grayscale" size="xs" (click)="editTransaction()" [iconStart]="'@tui.pencil'" aria-label="Edit transaction"></button>
+@if (canDelete()) {
+<button tuiIconButton tuiTheme="dark" appearance="flat-grayscale" size="xs" (click)="deleteTransaction()" [iconStart]="'@tui.trash-2'" aria-label="Delete transaction"></button>
+}
+}
 <div class="fill"></div>
 @if(authService.isAuthenticated()) {
-<button tuiButton tuiTheme="dark" appearance="flat-grayscale" size="xs" (click)="accounts()" [iconStart]="'@tui.wallet'">Accounts</button>
-}
-@if(authService.isAuthenticated()) {
-<button tuiButton tuiTheme="dark" appearance="flat-grayscale" size="xs" (click)="categories()" [iconStart]="'@tui.folder'">Categories</button>
-}
-@if(authService.isAuthenticated()) {
-<span>{{ authService.user()?.email }}</span>
-}
-@if(authService.isAuthenticated()) {
+<button #settingsButton tuiButton tuiChevron type="button" appearance="flat-grayscale" size="xs" class="light" [tuiDropdown]="settingsDropdown" tuiDropdownAuto><tui-icon icon="@tui.settings"></tui-icon></button>
+<ng-template #settingsDropdown>
+  <tui-data-list [size]="'s'">
+    @if (filteredAccount(); as account) {
+    <button tuiOption (click)="editFilteredAccount();settingsButton.click()" [iconEnd]="'@tui.pencil'" [disabled]="!canEditFiltered()">{{ account.name }}</button>
+    <button tuiOption (click)="shareFilteredAccount();settingsButton.click()" [iconEnd]="'@tui.users'">Sharing</button>
+    @if (account.type === 'bank' && canWriteFiltered()) {
+    <button tuiOption (click)="importFilteredAccount();settingsButton.click()" [iconEnd]="'@tui.download'">Import</button>
+    }
+    @if (account.tracked && canWriteFiltered()) {
+    <button tuiOption (click)="syncFilteredAccount();settingsButton.click()" [iconEnd]="'@tui.refresh-cw'" [disabled]="sync.syncing().has(account.id)">Sync</button>
+    }
+    <hr />
+    }
+    <button tuiOption (click)="accounts();settingsButton.click()" [iconEnd]="'@tui.wallet'">Accounts</button>
+    <button tuiOption (click)="categories();settingsButton.click()" [iconEnd]="'@tui.folder'">Categories</button>
+  </tui-data-list>
+</ng-template>
+<span>{{ authService.user()?.name }}</span>
 <button tuiButton tuiTheme="dark" appearance="flat-grayscale" size="xs" (click)="authService.logout()" [iconStart]="'@tui.user'">Logout</button>
 }

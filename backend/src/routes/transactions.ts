@@ -1,46 +1,83 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { validate } from '../middleware/validation';
+import { isoDateSchema, validate, validateIdParam } from '../middleware/validation';
 import * as transactionService from '../services/transactions';
+import { TransactionFilters } from '../db/queries/transactions';
 
 const router = Router();
 
 router.use(authMiddleware);
+router.param('id', validateIdParam);
 
 const createTransactionSchema = z.object({
-  categoryId: z.number().int().positive().optional(),
-  debitAccountId: z.number().int().positive().optional(),
-  creditAccountId: z.number().int().positive().optional(),
+  categoryId: z.number().int().positive().nullish(),
+  debitAccountId: z.number().int().positive().nullish(),
+  creditAccountId: z.number().int().positive().nullish(),
   debit: z.number().positive(),
   credit: z.number().positive(),
-  currency: z.string().min(1).optional(),
-  date: z.string(),
-  description: z.string().optional(),
+  date: isoDateSchema,
+  description: z.string().nullish(),
+  payee: z.string().nullish(),
 });
 
 const updateTransactionSchema = createTransactionSchema.partial();
 
+const arrayOfIds = z.preprocess(
+  (val) => (Array.isArray(val) ? val : val !== undefined ? [val] : undefined),
+  z.array(z.coerce.number().int().positive()).optional()
+);
+
 const filtersSchema = z.object({
-  from: z.string().optional(),
-  to: z.string().optional(),
-  category: z.coerce.number().int().positive().optional(),
+  from: isoDateSchema.optional(),
+  to: isoDateSchema.optional(),
+  categories: arrayOfIds,
+  accounts: arrayOfIds,
+  details: z.string().optional(),
   type: z.enum(['income', 'expense', 'transfer']).optional(),
-  page: z.coerce.number().int().positive().optional(),
+  offset: z.coerce.number().int().min(0).optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
 });
 
-router.get('/', validate(filtersSchema), async (req: AuthRequest, res, next) => {
+const toIntArray = (val: unknown): number[] | undefined => {
+  if (!val) return undefined;
+  const arr = Array.isArray(val) ? val : [val];
+  const nums = (arr as string[]).map(v => parseInt(v, 10)).filter(n => !isNaN(n));
+  return nums.length ? nums : undefined;
+};
+
+router.get('/', validate(filtersSchema, 'query'), async (req: AuthRequest, res, next) => {
   try {
-    const filters = {
+    const filters: TransactionFilters = {
       from: req.query.from as string | undefined,
       to: req.query.to as string | undefined,
-      category: req.query.category ? parseInt(req.query.category as string, 10) : undefined,
+      categories: toIntArray(req.query.categories),
+      accounts: toIntArray(req.query.accounts),
+      details: req.query.details as string | undefined,
       type: req.query.type as 'income' | 'expense' | 'transfer' | undefined,
-      page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
+      offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
     };
     const result = await transactionService.getTransactions(req.userId!, filters);
+    res.json({ data: result, error: null });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const summarySchema = z.object({
+  from: isoDateSchema.optional(),
+  to: isoDateSchema.optional(),
+  accounts: arrayOfIds,
+});
+
+router.get('/summary', validate(summarySchema, 'query'), async (req: AuthRequest, res, next) => {
+  try {
+    const result = await transactionService.getCategorySummary(req.userId!, {
+      from: req.query.from as string | undefined,
+      to: req.query.to as string | undefined,
+      accounts: toIntArray(req.query.accounts),
+    });
     res.json({ data: result, error: null });
   } catch (error) {
     next(error);
@@ -51,39 +88,27 @@ router.post('/', validate(createTransactionSchema), async (req: AuthRequest, res
   try {
     const transaction = await transactionService.createTransaction(req.userId!, req.body);
     res.json({ data: transaction, error: null });
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'statusCode' in error) {
-      const err = error as { statusCode: number; message: string };
-      return res.status(err.statusCode).json({ data: null, error: err.message });
-    }
+  } catch (error) {
     next(error);
   }
 });
 
 router.put('/:id', validate(updateTransactionSchema), async (req: AuthRequest, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(req.params.id as string, 10);
     const transaction = await transactionService.updateTransaction(id, req.userId!, req.body);
     res.json({ data: transaction, error: null });
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'statusCode' in error) {
-      const err = error as { statusCode: number; message: string };
-      return res.status(err.statusCode).json({ data: null, error: err.message });
-    }
+  } catch (error) {
     next(error);
   }
 });
 
 router.delete('/:id', async (req: AuthRequest, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(req.params.id as string, 10);
     await transactionService.deleteTransaction(id, req.userId!);
     res.json({ data: { success: true }, error: null });
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'statusCode' in error) {
-      const err = error as { statusCode: number; message: string };
-      return res.status(err.statusCode).json({ data: null, error: err.message });
-    }
+  } catch (error) {
     next(error);
   }
 });

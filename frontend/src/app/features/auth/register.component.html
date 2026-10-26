@@ -1,17 +1,29 @@
 <div class="auth-container">
   <div class="auth-card card">
     <h1>Register</h1>
-    <form [formGroup]="form" (ngSubmit)="onSubmit()" tuiTextfieldSize="m">
-      <tui-textfield>
-        <label tuiLabel>Email</label>
-        <input tuiTextfield type="email" formControlName="email" placeholder="Enter your email">
-      </tui-textfield>
-      <tui-textfield>
-        <label tuiLabel>Password</label>
-        <input tuiTextfield type="password" formControlName="password" placeholder="Enter your password (min 6 characters)">
-        <tui-icon tuiPassword />
-      </tui-textfield>
-      <tui-error [error]="error()" />
+    <form [formGroup]="form" (submit)="onSubmit($event)" tuiTextfieldSize="m">
+      <label tuiLabel>Email
+        <tui-textfield>
+          <input tuiInput type="email" formControlName="email" placeholder="Enter your email">
+        </tui-textfield>
+      </label>
+      <label tuiLabel>Name
+        <tui-textfield>
+          <input tuiInput type="text" formControlName="name"
+            placeholder="{{ (form.get('email')?.value || '').split('@')[0] || 'Optional' }}" />
+        </tui-textfield>
+      </label>
+      <label tuiLabel>Currency
+        <tui-textfield>
+          <input tuiInput type="text" formControlName="currency" placeholder="EUR">
+        </tui-textfield>
+      </label>
+      <label tuiLabel>Password
+        <tui-textfield>
+          <input tuiInput type="password" formControlName="password" placeholder="Enter your password (min 6 characters)">
+          <tui-icon tuiPassword />
+        </tui-textfield>
+      </label>
       <button tuiButton size="m" type="submit" [disabled]="loading()">
         {{ loading() ? 'Loading...' : 'Register' }}
       </button>

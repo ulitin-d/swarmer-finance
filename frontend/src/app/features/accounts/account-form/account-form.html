@@ -1,22 +1,57 @@
 <form [formGroup]="form" (ngSubmit)="onSubmit()" class="form" tuiTextfieldSize="m">
+    <tui-textfield tuiChevron [tuiTextfieldCleaner]="false" [stringify]="typeLabel">
+        <label tuiLabel>Type</label>
+        <input tuiSelect formControlName="type" />
+        <tui-data-list-wrapper *tuiDropdown [items]="accountTypes" [itemContent]="typeLabel | tuiStringifyContent" />
+    </tui-textfield>
+
     <tui-textfield>
         <label tuiLabel>Name</label>
-        <input tuiTextfield formControlName="name" placeholder="Account name" />
+        <input tuiInput tuiAutoFocus formControlName="name" placeholder="Account name" />
     </tui-textfield>
 
-    <tui-textfield>
-        <label tuiLabel>Currency</label>
-        <input tuiTextfield formControlName="currency" placeholder="e.g. USD, EUR" />
-    </tui-textfield>
+    <div class="row">
+        <tui-textfield>
+            <label tuiLabel>Starting Balance</label>
+            <input tuiInputNumber formControlName="startBalance" [min]="0" [quantum]="balanceQuantum()"
+                [tuiNumberFormat]="{ precision: balancePrecision() }" placeholder="0" />
+        </tui-textfield>
 
-    <tui-textfield>
-        <label tuiLabel>Starting Balance</label>
-        <input tuiTextfield type="number" formControlName="startBalance" placeholder="0" />
-    </tui-textfield>
+        <tui-textfield tuiChevron class="currency" [tuiTextfieldCleaner]="false">
+            <label tuiLabel>Currency</label>
+            <input tuiComboBox formControlName="currency" placeholder="e.g. USD, EUR" [strict]="false" />
+            <tui-data-list-wrapper *tuiDropdown [items]="currencyOptions() | tuiFilterByInput" />
+        </tui-textfield>
+    </div>
 
-    <tui-error [error]="error()" />
+    @if (hasTransactions() && !tracked()) {
+        <p class="hint">The account has transactions: to correct its balance, add a correcting transaction.</p>
+    }
 
-    <button tuiButton size="m" type="submit" [disabled]="loading()">
-        {{ loading() ? 'Saving...' : (!!accountId() ? 'Save Changes' : 'Create Account') }}
-    </button>
+    @if (type() === 'bank') {
+        <tui-textfield>
+            <label tuiLabel>Account Number</label>
+            <input tuiInput formControlName="accountNumber" placeholder="IBAN or account number" />
+        </tui-textfield>
+    }
+
+    @if (type() === 'crypto') {
+        <tui-textfield>
+            <label tuiLabel>Wallet Address</label>
+            <input tuiInput formControlName="address" placeholder="Wallet address" />
+        </tui-textfield>
+
+        <tui-textfield tuiChevron [tuiTextfieldCleaner]="false" [stringify]="blockchainLabel">
+            <label tuiLabel>Blockchain</label>
+            <input tuiSelect formControlName="blockchain" />
+            <tui-data-list-wrapper *tuiDropdown [items]="blockchains" [itemContent]="blockchainLabel | tuiStringifyContent" />
+        </tui-textfield>
+    }
+
+    <div class="actions">
+        <button tuiButton size="s" type="button" appearance="outline" (click)="cancel()">Cancel</button>
+        <button tuiButton size="s" type="submit" [disabled]="loading()">
+            {{ loading() ? 'Saving...' : (!!accountId() ? 'Save Changes' : 'Create Account') }}
+        </button>
+    </div>
 </form>

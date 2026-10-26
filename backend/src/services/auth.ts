@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import * as userQueries from '../db/queries/users';
 import * as categoryQueries from '../db/queries/categories';
+import { getCurrencyScale } from './currencyScale';
 import { User, AuthTokens, JwtPayload } from '../types';
 
 const ACCESS_TOKEN_EXPIRY = '15m';
@@ -23,14 +24,17 @@ const generateTokens = (userId: number): AuthTokens => {
   return { accessToken, refreshToken };
 };
 
-export const register = async (email: string, password: string): Promise<{ user: User; tokens: AuthTokens }> => {
+export const register = async (email: string, password: string, name: string, currency: string): Promise<{ user: User; tokens: AuthTokens }> => {
   const existingUser = await userQueries.getUserByEmail(email);
   if (existingUser) {
     throw { statusCode: 400, message: 'Email already registered' };
   }
-  
+
+  const resolvedCurrency = currency || 'EUR';
+  const currencyScale = getCurrencyScale(resolvedCurrency);
+
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = await userQueries.createUser(email, passwordHash);
+  const user = await userQueries.createUser(email, passwordHash, name || email.split('@')[0], resolvedCurrency, currencyScale);
   
   // Seed default categories for new user
   await seedDefaultCategories(user.id);
@@ -58,7 +62,11 @@ export const login = async (email: string, password: string): Promise<{ user: Us
 
 export const refreshTokens = async (refreshToken: string): Promise<AuthTokens> => {
   try {
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as JwtPayload;
+    // Pin the verification algorithm explicitly. See middleware/auth.ts for
+    // the rationale; same threat applies to refresh tokens.
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!, {
+      algorithms: ['HS256'],
+    }) as JwtPayload;
     if (decoded.type !== 'refresh') {
       throw { statusCode: 401, message: 'Invalid token type' };
     }
@@ -68,7 +76,7 @@ export const refreshTokens = async (refreshToken: string): Promise<AuthTokens> =
       throw { statusCode: 401, message: 'User not found' };
     }
 
-    return { ...generateTokens(user.id), user: { id: user.id, email: user.email } };
+    return { ...generateTokens(user.id), user: { id: user.id, email: user.email, name: user.name, currency: user.currency, currency_scale: user.currency_scale } };
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'statusCode' in error) throw error;
     throw { statusCode: 401, message: 'Invalid refresh token' };

@@ -1,6 +1,66 @@
 import * as transactionQueries from '../db/queries/transactions';
-import * as categoryQueries from '../db/queries/categories';
 import * as accountQueries from '../db/queries/accounts';
+import { getTreeCategories, resolveCategoryForOwner } from './categories';
+import { expandCategoryFilter } from '../db/queries/categories';
+import { getRelatedUserIds } from '../db/queries/accountShares';
+import * as userQueries from '../db/queries/users';
+import { getRatesTo, convertAmount, toDecimal, toCents } from './currency';
+import { Account, Transaction, TransactionDTO } from '../types';
+import { isTracked } from './chain';
+import { LEVEL, getAccessibleAccountIds, requireLevelOnAll } from './access';
+
+const UNCATEGORIZED_INCOME_CATEGORY_ID = 3;
+const UNCATEGORIZED_EXPENSE_CATEGORY_ID = 4;
+
+const SYNCED_MESSAGE = 'Transactions of this account are loaded from the blockchain';
+
+/** Which of these accounts are synced from a blockchain. */
+async function trackedAmong(accountIds: (number | null | undefined)[]): Promise<Set<number>> {
+  const ids = [...new Set(accountIds.filter((id): id is number => id != null))];
+  const accounts = await accountQueries.getAccountsByIds(ids);
+  return new Set(accounts.filter(isTracked).map(a => a.id));
+}
+
+/**
+ * A transaction on a blockchain-synced account records what the chain says:
+ * the date, the synced side's account and amount, and the payee address are
+ * fixed. The user may still categorise it, point its other side at an
+ * ordinary account (turning it into a transfer or back), set that side's
+ * amount when the currencies differ — validateTransactionInput already
+ * forces it equal otherwise — and edit the description. With both sides
+ * synced, that leaves only the description.
+ *
+ * `next` is the validated update, amounts already in cents. Stored NUMERIC
+ * amounts arrive from pg as strings, hence Number().
+ */
+function assertSyncedEdit(existing: Transaction, next: CreateInput, tracked: Set<number>): void {
+  const debitSynced = existing.debit_account_id != null && tracked.has(existing.debit_account_id);
+  const creditSynced = existing.credit_account_id != null && tracked.has(existing.credit_account_id);
+
+  if (!debitSynced && !creditSynced) {
+    if ([next.debitAccountId, next.creditAccountId].some(id => id != null && tracked.has(id))) {
+      throw { statusCode: 403, message: SYNCED_MESSAGE };
+    }
+    return;
+  }
+
+  const refuse = (what: string) => {
+    throw { statusCode: 400, message: `${SYNCED_MESSAGE}; its ${what} cannot be changed` };
+  };
+  if (next.date !== existing.date) refuse('date');
+  if ((next.payee ?? '') !== (existing.payee ?? '')) refuse('payee');
+  if (debitSynced && (next.debitAccountId !== existing.debit_account_id || next.debit !== Number(existing.debit))) {
+    refuse('account or amount');
+  }
+  if (creditSynced && (next.creditAccountId !== existing.credit_account_id || next.credit !== Number(existing.credit))) {
+    refuse('account or amount');
+  }
+
+  const other = debitSynced && creditSynced ? null : debitSynced ? next.creditAccountId : next.debitAccountId;
+  if (other != null && tracked.has(other)) {
+    throw { statusCode: 400, message: 'A transfer between two synced accounts is created by sync only' };
+  }
+}
 
 type CreateInput = {
   categoryId?: number;
@@ -8,32 +68,45 @@ type CreateInput = {
   creditAccountId?: number;
   debit: number;
   credit: number;
-  currency?: string;
   date: string;
   description?: string;
+  payee?: string;
 };
 
-type UpdateInput = Partial<CreateInput>;
+type UpdateInput = {
+  categoryId?: number | null;
+  debitAccountId?: number | null;
+  creditAccountId?: number | null;
+  debit?: number;
+  credit?: number;
+  date?: string;
+  description?: string | null;
+  payee?: string | null;
+};
 
-async function validateAccountOwnership(accountId: number, userId: number, label: string): Promise<void> {
-  const account = await accountQueries.getAccountById(accountId, userId);
-  if (!account) {
+/**
+ * The account, provided it exists, is not deleted, and the caller may write
+ * to it. `checkedIds` names accounts whose access was already asserted by the
+ * caller in a single batched check — anything not listed is checked here, so
+ * an omission fails closed.
+ */
+async function loadAccount(
+  accountId: number,
+  userId: number,
+  label: string,
+  checkedIds: number[] = []
+): Promise<Account> {
+  const account = await accountQueries.getAccountById(accountId);
+  if (!account || account.deleted) {
     throw { statusCode: 403, message: `Cannot use this ${label} account` };
   }
+  if (!checkedIds.includes(accountId)) {
+    await requireLevelOnAll([accountId], userId, LEVEL.WRITE);
+  }
+  return account;
 }
 
-async function validateCategory(categoryId: number, userId: number): Promise<void> {
-  const hasAccess = await categoryQueries.canUserAccessCategory(categoryId, userId);
-  if (!hasAccess) {
-    throw { statusCode: 403, message: 'Cannot use this category' };
-  }
-  const isLeaf = !(await categoryQueries.hasChildren(categoryId));
-  if (!isLeaf) {
-    throw { statusCode: 400, message: 'Must select a leaf category' };
-  }
-}
-
-async function validateTransactionInput(input: CreateInput, userId: number): Promise<void> {
+async function validateTransactionInput(input: CreateInput, userId: number, categoryOwnerId: number): Promise<void> {
   const hasDebit = input.debitAccountId != null;
   const hasCredit = input.creditAccountId != null;
 
@@ -46,72 +119,313 @@ async function validateTransactionInput(input: CreateInput, userId: number): Pro
     if (input.categoryId != null) {
       throw { statusCode: 400, message: 'Transfers must not have a category' };
     }
-    if (input.currency != null) {
-      throw { statusCode: 400, message: 'Transfers must not have a currency' };
+    // Both sides in one access check: two loadAccount calls would each
+    // resolve the caller's access map separately.
+    const both = [input.debitAccountId!, input.creditAccountId!];
+    await requireLevelOnAll(both, userId, LEVEL.WRITE);
+    const debitAccount = await loadAccount(input.debitAccountId!, userId, 'debit', both);
+    const creditAccount = await loadAccount(input.creditAccountId!, userId, 'credit', both);
+    input.debit = toCents(input.debit, debitAccount.scale);
+    input.credit = toCents(input.credit, creditAccount.scale);
+    // When both accounts share a currency, debit and credit must be equal —
+    // otherwise value silently disappears or appears between the two sides.
+    // Cross-currency transfers allow debit != credit (FX conversion / fee).
+    if (debitAccount.currency === creditAccount.currency && input.debit !== input.credit) {
+      throw {
+        statusCode: 400,
+        message: `Same-currency transfers require debit to equal credit (both accounts are ${debitAccount.currency})`,
+      };
     }
-    await validateAccountOwnership(input.debitAccountId!, userId, 'debit');
-    await validateAccountOwnership(input.creditAccountId!, userId, 'credit');
   } else if (hasDebit) {
     // Expense
+    const debitAccount = await loadAccount(input.debitAccountId!, userId, 'debit');
+    input.debit = toCents(input.debit, debitAccount.scale);
+    input.credit = toCents(input.credit, debitAccount.scale);
+    if (input.debit !== input.credit) {
+      throw {
+        statusCode: 400,
+        message: `Expenses require debit to equal credit (account and transaction are ${debitAccount.currency})`,
+      };
+    }
     if (input.categoryId == null) {
-      throw { statusCode: 400, message: 'Expenses must have a category' };
+      input.categoryId = UNCATEGORIZED_EXPENSE_CATEGORY_ID;
     }
-    if (input.currency == null) {
-      throw { statusCode: 400, message: 'Expenses must have a currency (credit side)' };
-    }
-    await validateAccountOwnership(input.debitAccountId!, userId, 'debit');
-    await validateCategory(input.categoryId, userId);
+    // The stored category must belong to the transaction's owner, not
+    // whoever is editing: user_id is preserved across updates, so an
+    // owner-authored transaction keeps a category from the owner's own
+    // tree. Picking someone else's category copies its path across rather
+    // than storing their id.
+    input.categoryId = await resolveCategoryForOwner(input.categoryId, categoryOwnerId);
   } else {
     // Income
+    const creditAccount = await loadAccount(input.creditAccountId!, userId, 'credit');
+    input.debit = toCents(input.debit, creditAccount.scale);
+    input.credit = toCents(input.credit, creditAccount.scale);
+    if (input.debit !== input.credit) {
+      throw {
+        statusCode: 400,
+        message: `Income requires debit to equal credit (account and transaction are ${creditAccount.currency})`,
+      };
+    }
     if (input.categoryId == null) {
-      throw { statusCode: 400, message: 'Income transactions must have a category' };
+      input.categoryId = UNCATEGORIZED_INCOME_CATEGORY_ID;
     }
-    if (input.currency == null) {
-      throw { statusCode: 400, message: 'Income transactions must have a currency (debit side)' };
-    }
-    await validateAccountOwnership(input.creditAccountId!, userId, 'credit');
-    await validateCategory(input.categoryId, userId);
+    // See comment above: the category is resolved against the
+    // transaction's owner, not the editing user.
+    input.categoryId = await resolveCategoryForOwner(input.categoryId, categoryOwnerId);
   }
+}
+
+function toDecimalTransactionDTO(t: TransactionDTO): TransactionDTO {
+  const debitScale = t.debit_account?.scale ?? t.credit_account?.scale ?? 2;
+  const creditScale = t.credit_account?.scale ?? t.debit_account?.scale ?? 2;
+  return {
+    ...t,
+    debit: toDecimal(t.debit, debitScale),
+    credit: toDecimal(t.credit, creditScale),
+    debit_account: t.debit_account && t.debit_account.balance != null
+      ? { ...t.debit_account, balance: toDecimal(t.debit_account.balance, t.debit_account.scale) }
+      : t.debit_account,
+    credit_account: t.credit_account && t.credit_account.balance != null
+      ? { ...t.credit_account, balance: toDecimal(t.credit_account.balance, t.credit_account.scale) }
+      : t.credit_account,
+  };
 }
 
 export const getTransactions = async (
   userId: number,
   filters: transactionQueries.TransactionFilters
 ) => {
-  return transactionQueries.getTransactionsByUserId(userId, filters);
+  const accessibleIds = await getAccessibleAccountIds(userId);
+  // A supplied `accounts` filter is intersected with what the user may see,
+  // never trusted on its own. The result replaces `accounts` wholesale, so the
+  // query receives one list that is both the access gate and the filter.
+  const accountIds = filters.accounts?.length
+    ? filters.accounts.filter(id => accessibleIds.includes(id))
+    : accessibleIds;
+
+  // The tree shows one node per path, backed by a row per user, and a node
+  // stands for its subtree — so a filter on one id must match every row
+  // behind that node. Expanding here keeps the query a plain id match.
+  let categoryIds = filters.categories;
+  if (filters.categories?.length) {
+    const relatedUserIds = await getRelatedUserIds(userId);
+    categoryIds = await expandCategoryFilter(filters.categories, relatedUserIds);
+    // An expansion that matched nothing means no transaction can match. The
+    // query treats an empty list as "no category filter", so returning early
+    // is what keeps that from widening into every transaction.
+    if (categoryIds.length === 0) return [];
+  }
+
+  const transactions = await transactionQueries.getTransactions({
+    ...filters,
+    accounts: accountIds,
+    categories: categoryIds,
+  });
+  const sequential = !filters.details && !filters.categories?.length && !filters.type;
+  const result = sequential && transactions.length > 0
+    ? await attachRunningBalances(transactions, accessibleIds)
+    : transactions;
+  return result.map(toDecimalTransactionDTO);
 };
 
+/** The account with its running balance, or unchanged when it has none. */
+function withBalance(
+  account: import('../types').TransactionAccount,
+  balances: Map<number, number>
+): import('../types').TransactionAccount {
+  const balance = balances.get(account.id);
+  return balance === undefined ? account : { ...account, balance };
+}
+
+async function attachRunningBalances(
+  transactions: import('../types').TransactionDTO[],
+  accessibleIds: number[]
+) {
+  // A cross-boundary transfer's counterparty account may appear on the DTO
+  // (its name is not secret) but its balance must not be computed or
+  // returned unless the caller can also reach that account.
+  const accountIds = [...new Set(
+    transactions.flatMap(t => [t.debit_account?.id, t.credit_account?.id].filter((id): id is number => id != null))
+  )].filter(id => accessibleIds.includes(id));
+
+  // transactions are ordered newest-first (date DESC, created_at DESC, id
+  // DESC); anchor the seed balance strictly before the oldest transaction
+  // on this page, then walk forward (oldest to newest) applying each
+  // transaction's own effect. Seeding from a specific transaction's cursor
+  // — rather than a bare date — avoids double-counting same-date
+  // transactions that fall on a different page.
+  const last = transactions[transactions.length - 1];
+  const balanceRows = await transactionQueries.getBalancesAt(accountIds, last.id);
+  const balanceMap = new Map(balanceRows.map(r => [r.id, r.balance]));
+
+  const withBalances = [];
+  for (let i = transactions.length - 1; i >= 0; i--) {
+    const t = transactions[i];
+    // Only accumulate for accounts seeded above (i.e. accessible to the
+    // caller); an excluded account must never gain an entry via `?? 0`,
+    // which would fabricate a balance from this page alone.
+    if (t.debit_account && balanceMap.has(t.debit_account.id)) {
+      balanceMap.set(t.debit_account.id, balanceMap.get(t.debit_account.id)! - Number(t.debit));
+    }
+    if (t.credit_account && balanceMap.has(t.credit_account.id)) {
+      balanceMap.set(t.credit_account.id, balanceMap.get(t.credit_account.id)! + Number(t.credit));
+    }
+    // An account with no seeded balance is one the caller cannot reach, so
+    // the key is left off entirely rather than set to undefined — the DTO
+    // should not carry a `balance` that only disappears because JSON drops
+    // undefined values.
+    withBalances[i] = {
+      ...t,
+      debit_account: t.debit_account ? withBalance(t.debit_account, balanceMap) : null,
+      credit_account: t.credit_account ? withBalance(t.credit_account, balanceMap) : null,
+    };
+  }
+  return withBalances;
+}
+
 export const createTransaction = async (userId: number, input: CreateInput) => {
-  await validateTransactionInput(input, userId);
-  return transactionQueries.createTransaction(userId, input);
+  if ((await trackedAmong([input.debitAccountId, input.creditAccountId])).size > 0) {
+    throw { statusCode: 403, message: SYNCED_MESSAGE };
+  }
+  await validateTransactionInput(input, userId, userId);
+  const transaction = await transactionQueries.createTransaction(userId, input);
+  return toDecimalTransactionDTO(transaction);
 };
 
 export const updateTransaction = async (id: number, userId: number, input: UpdateInput) => {
-  const existing = await transactionQueries.getTransactionById(id, userId);
+  const existing = await transactionQueries.getTransactionById(id);
   if (!existing) {
     throw { statusCode: 404, message: 'Transaction not found' };
   }
 
-  // Merge input with existing values to re-validate the full resulting state
+  // Write access on the accounts the transaction touches TODAY. The accounts
+  // it will touch after the update are checked by validateTransactionInput ->
+  // loadAccount below. Both matter: without the first check a transaction
+  // could be moved off an account the user cannot write to.
+  await requireLevelOnAll(
+    [existing.debit_account_id, existing.credit_account_id],
+    userId,
+    LEVEL.WRITE
+  );
+
+  // existing.debit/credit are stored in cents; input.debit/credit (when
+  // provided) arrive as decimal from the API. Convert existing to decimal
+  // using its own accounts' scales so the merged object is consistently
+  // decimal before re-validation converts it back to cents.
+  const existingDebitAccount = existing.debit_account_id != null
+    ? await accountQueries.getAccountById(existing.debit_account_id)
+    : null;
+  const existingCreditAccount = existing.credit_account_id != null
+    ? await accountQueries.getAccountById(existing.credit_account_id)
+    : null;
+  // Each side at its own account's scale: a cross-currency transfer's two
+  // amounts can differ in decimal places (EUR cents vs BTC satoshis).
+  const existingDebitScale = existingDebitAccount?.scale ?? existingCreditAccount?.scale ?? 2;
+  const existingCreditScale = existingCreditAccount?.scale ?? existingDebitAccount?.scale ?? 2;
+
+  // Merge input with existing values to re-validate the full resulting state.
+  // null in input means "clear this field"; undefined means "keep existing".
   const merged: CreateInput = {
-    categoryId: input.categoryId !== undefined ? input.categoryId : (existing.category_id ?? undefined),
-    debitAccountId: input.debitAccountId !== undefined ? input.debitAccountId : (existing.debit_account_id ?? undefined),
-    creditAccountId: input.creditAccountId !== undefined ? input.creditAccountId : (existing.credit_account_id ?? undefined),
-    debit: input.debit ?? existing.debit,
-    credit: input.credit ?? existing.credit,
-    currency: input.currency !== undefined ? input.currency : (existing.currency ?? undefined),
-    date: input.date ?? existing.date.toString(),
-    description: input.description ?? existing.description,
+    categoryId: input.categoryId !== undefined ? (input.categoryId ?? undefined) : (existing.category_id ?? undefined),
+    debitAccountId: input.debitAccountId !== undefined ? (input.debitAccountId ?? undefined) : (existing.debit_account_id ?? undefined),
+    creditAccountId: input.creditAccountId !== undefined ? (input.creditAccountId ?? undefined) : (existing.credit_account_id ?? undefined),
+    debit: input.debit ?? toDecimal(existing.debit, existingDebitScale),
+    credit: input.credit ?? toDecimal(existing.credit, existingCreditScale),
+    date: input.date ?? existing.date,
+    description: input.description !== undefined ? (input.description ?? undefined) : existing.description,
+    payee: input.payee !== undefined ? (input.payee ?? undefined) : (existing.payee ?? undefined),
   };
 
-  await validateTransactionInput(merged, userId);
-  return transactionQueries.updateTransaction(id, userId, input);
+  await validateTransactionInput(merged, userId, existing.user_id);
+  assertSyncedEdit(
+    existing,
+    merged,
+    await trackedAmong([existing.debit_account_id, existing.credit_account_id, merged.debitAccountId, merged.creditAccountId])
+  );
+  const transaction = await transactionQueries.updateTransaction(id, merged);
+  return transaction ? toDecimalTransactionDTO(transaction) : transaction;
 };
 
 export const deleteTransaction = async (id: number, userId: number): Promise<void> => {
-  const existing = await transactionQueries.getTransactionById(id, userId);
+  const existing = await transactionQueries.getTransactionById(id);
   if (!existing) {
     throw { statusCode: 404, message: 'Transaction not found' };
   }
-  await transactionQueries.deleteTransaction(id, userId);
+  await requireLevelOnAll(
+    [existing.debit_account_id, existing.credit_account_id],
+    userId,
+    LEVEL.WRITE
+  );
+  if ((await trackedAmong([existing.debit_account_id, existing.credit_account_id])).size > 0) {
+    throw { statusCode: 403, message: SYNCED_MESSAGE };
+  }
+  await transactionQueries.deleteTransaction(id);
+};
+
+export const getAccountBalances = async (
+  accountIds: number[]
+): Promise<transactionQueries.AccountBalance[]> => {
+  return transactionQueries.getAccountBalances(accountIds);
+};
+
+export interface CategorySummaryItem {
+  category_id: number;
+  name: string;
+  color: string;
+  icon: string;
+  /** In the user's currency at today's rate; null when a rate is missing. */
+  total: number | null;
+  /** The unconverted sums, one per account currency. */
+  amounts: { currency: string; scale: number; amount: number }[];
+}
+
+export interface CategorySummary {
+  currency: string;
+  scale: number;
+  income: CategorySummaryItem[];
+  expense: CategorySummaryItem[];
+}
+
+export const getCategorySummary = async (
+  userId: number,
+  filters: Pick<transactionQueries.TransactionFilters, 'accounts' | 'from' | 'to'>
+): Promise<CategorySummary> => {
+  const user = await userQueries.getUserById(userId);
+  if (!user) throw { statusCode: 401, message: 'User not found' };
+
+  const accessibleIds = await getAccessibleAccountIds(userId);
+  const accountIds = filters.accounts?.length
+    ? filters.accounts.filter(id => accessibleIds.includes(id))
+    : accessibleIds;
+
+  const rows = await transactionQueries.getCategorySummary({ ...filters, accounts: accountIds });
+  const rates = await getRatesTo(user.currency, rows.map(r => r.currency));
+
+  // One item per type + the category the user's tree shows for that name
+  // (their own row over a co-owner's); the query splits each by currency.
+  const tree = await getTreeCategories(userId);
+  const items = new Map<string, CategorySummaryItem & { type: 'income' | 'expense'; cents: number | null }>();
+  for (const row of rows) {
+    const category = tree.get(row.category_id) ?? { ...row, id: row.category_id };
+    const key = `${row.type}:${category.id}`;
+    let item = items.get(key);
+    if (!item) {
+      item = { type: row.type, category_id: category.id, name: category.name, color: category.color, icon: category.icon, total: null, cents: 0, amounts: [] };
+      items.set(key, item);
+    }
+    const converted = convertAmount(row.amount, row.scale, rates.get(row.currency) ?? null, user.currency_scale);
+    item.cents = item.cents === null || converted === null ? null : item.cents + converted;
+    item.amounts.push({ currency: row.currency, scale: row.scale, amount: toDecimal(row.amount, row.scale) });
+  }
+
+  const result: CategorySummary = { currency: user.currency, scale: user.currency_scale, income: [], expense: [] };
+  for (const { type, cents, ...item } of items.values()) {
+    result[type].push({ ...item, total: cents === null ? null : toDecimal(cents, user.currency_scale) });
+  }
+  // Largest first; a category without a total cannot be ranked and goes last.
+  for (const list of [result.income, result.expense]) {
+    list.sort((a, b) => Number(a.total === null) - Number(b.total === null) || (b.total ?? 0) - (a.total ?? 0));
+  }
+  return result;
 };

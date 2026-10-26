@@ -1,9 +1,15 @@
 node_modules/
 dist/
+.claude/
 .angular/
 *.log
 .env
 .env.local
 .DS_Store
 coverage/
-*.test.ts
+.playwright-mcp/
+screenshots/
+
+# Real bank statements — contain personal data. Redacted copies for tests
+# live in backend/src/test/fixtures/banks/.
+backend/banks/

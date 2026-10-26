@@ -5,11 +5,11 @@ CREATE TABLE transactions (
   category_id INTEGER REFERENCES categories(id) ON DELETE RESTRICT,
   debit_account_id INTEGER REFERENCES accounts(id) ON DELETE RESTRICT,
   credit_account_id INTEGER REFERENCES accounts(id) ON DELETE RESTRICT,
-  debit INTEGER NOT NULL,
-  credit INTEGER NOT NULL,
-  currency TEXT,
+  debit NUMERIC(24, 0) NOT NULL,
+  credit NUMERIC(24, 0) NOT NULL,
   date DATE NOT NULL,
   description TEXT DEFAULT '',
+  payee TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

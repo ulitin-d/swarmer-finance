@@ -1,0 +1,39 @@
+<nav class="account-list" aria-label="Filter by account">
+  <div class="all-row-header">
+    <button
+      class="all-row-name"
+      [class.active]="transactions.selectedAccountIds().length === 0"
+      type="button"
+      (click)="transactions.selectAllAccounts()"
+    >All accounts</button>
+    <button
+      class="add-account"
+      type="button"
+      aria-label="Add account"
+      title="Add account"
+      (click)="openCreateDialog()"
+    >+</button>
+  </div>
+
+  @for (section of state.accountSections(); track section.access_level) {
+    <div class="section" [attr.data-level]="section.access_level">
+      @for (item of section.items; track item.kind === 'account' ? item.account.id : item.key) {
+        <app-account-tree-node [item]="item" />
+      }
+    </div>
+  }
+
+  @if (state.accountSections().length > 0 && state.summary(); as summary) {
+    @if (totalHint(); as hint) {
+      <div class="summary-row">
+        <span class="summary-balance" [tuiHint]="hint">
+          {{ summary.incomplete ? '—' : (summary.total | money: summary.currency : summary.scale) }}
+        </span>
+      </div>
+    } @else if (!summary.incomplete) {
+      <div class="summary-row">
+        <span class="summary-balance">{{ summary.total | money: summary.currency : summary.scale }}</span>
+      </div>
+    }
+  }
+</nav>

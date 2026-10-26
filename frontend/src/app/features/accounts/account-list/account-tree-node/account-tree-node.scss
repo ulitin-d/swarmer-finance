@@ -1,0 +1,78 @@
+.row-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+.row-balance {
+  flex-shrink: 0;
+  color: var(--tui-text-tertiary);
+  font-size: 0.8rem;
+}
+
+.row-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.15rem 0.25rem 0.15rem 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--tui-text-secondary);
+  border-radius: var(--tui-radius-m);
+  height: 1.5rem;
+
+  &.uppercase {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  &:hover {
+    color: var(--tui-text-primary);
+  }
+
+  &.active {
+    color: var(--tui-text-primary);
+    font-weight: 500;
+  }
+}
+
+.chevron {
+  padding: 0.375rem 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--tui-text-secondary);
+  border-radius: var(--tui-radius-m);
+  transition: transform 0.15s ease;
+  transform: rotate(90deg);
+
+  &[aria-expanded="false"] {
+    transform: rotate(0deg);
+  }
+
+  // Translucent rather than an opaque grey: the row sits on the section's
+  // coloured background, which has to tint through the hover state.
+  &:hover {
+    background: rgb(0 0 0 / 7%);
+  }
+}
+
+.hidden {
+    display: none;
+}
+
+.small[tuiAppearance][data-appearance='gray'] {
+    color: var(--tui-text-tertiary);
+    scale: 0.7;
+    &[data-state='hover'],
+    &:hover:not(._no-hover):not(:disabled){
+        color: var(--tui-text-primary);
+    };
+}

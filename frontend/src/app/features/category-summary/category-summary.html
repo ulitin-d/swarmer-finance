@@ -1,0 +1,57 @@
+@for (block of blocks(); track block.type) {
+  <section class="block" [attr.data-type]="block.type" [attr.aria-label]="block.title">
+    <button
+      type="button"
+      class="block-header"
+      [class.selected]="transactions.selectedType() === block.type"
+      [attr.aria-pressed]="transactions.selectedType() === block.type"
+      (click)="transactions.selectType(block.type)"
+    >
+      <span class="block-title">{{ block.title }}</span>
+      @if (block.total !== null) {
+        <span class="block-total">{{ block.total | money: currency() : scale() }}</span>
+      }
+    </button>
+    @for (row of block.rows; track row.category_id) {
+      <button
+        type="button"
+        class="row"
+        [class.selected]="selected().has(row.category_id)"
+        [attr.aria-pressed]="selected().has(row.category_id)"
+        [attr.aria-description]="row.hint"
+        (click)="$event.ctrlKey || $event.metaKey ? transactions.toggleCategory(row.category_id) : transactions.selectCategory(row.category_id)"
+      >
+        <tui-icon class="icon" [icon]="'@tui.' + row.icon" [style.color]="row.color" />
+        <span class="name">{{ row.name }}</span>
+        @if (row.hint) {
+          <span class="amount" [tuiHint]="row.hint">
+            {{ row.total === null ? '—' : (row.total | money: currency() : scale()) }}
+          </span>
+        } @else {
+          <span class="amount">{{ row.total | money: currency() : scale() }}</span>
+        }
+        <span class="bar" aria-hidden="true">
+          <span class="bar-fill" [style.width.%]="row.share" [style.background]="row.color"></span>
+        </span>
+      </button>
+    }
+  </section>
+}
+
+@if (loading()) {
+  <tui-loader class="loader" />
+} @else if (blocks().length === 0) {
+  <p class="empty">No income or expenses.</p>
+}
+
+@if (blocks().length > 0) {
+<button
+  type="button"
+  class="block-header transfers"
+  [class.selected]="transactions.selectedType() === 'transfer'"
+  [attr.aria-pressed]="transactions.selectedType() === 'transfer'"
+  (click)="transactions.selectType('transfer')"
+>
+  Transfers
+</button>
+}

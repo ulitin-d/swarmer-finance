@@ -1,47 +1,54 @@
-import { Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
-import { TuiButton, TuiError, TuiIcon, TuiLink, TuiTextfield } from '@taiga-ui/core';
+import { TuiButton, TuiIcon, TuiInput, TuiLink } from '@taiga-ui/core';
 import { TuiPassword } from '@taiga-ui/kit';
-import { TuiValidationError } from '@taiga-ui/cdk/classes';
 import { AuthService } from '../../core/auth.service';
+import { firstValueFrom } from 'rxjs';
+import { NotificationService } from '../../core/notification.service';
 
 @Component({
   selector: 'app-register',
-  standalone: true,
-  imports: [ReactiveFormsModule, RouterLink, TuiButton, TuiError, TuiIcon, TuiLink, TuiTextfield, TuiPassword],
+  imports: [ReactiveFormsModule, RouterLink, TuiButton, TuiIcon, TuiLink, TuiInput, TuiPassword],
   templateUrl: './register.component.html',
-  styleUrl: './register.component.scss'
+  styleUrl: './register.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RegisterComponent {
-  private authService = inject(AuthService);
-  private router = inject(Router);
+  private readonly authService = inject(AuthService);
+  private readonly router = inject(Router);
+  private readonly notifications = inject(NotificationService);
 
   form = new FormGroup({
     email: new FormControl('', [Validators.required, Validators.email]),
-    password: new FormControl('', [Validators.required, Validators.minLength(6)])
+    password: new FormControl('', [Validators.required, Validators.minLength(6)]),
+    name: new FormControl(''),
+    // Optional; the backend takes 3 or 4 letter codes (EUR, USDT), upper case.
+    currency: new FormControl('', [Validators.pattern(/^\s*[A-Za-z]{3,4}\s*$/)])
   });
 
   loading = signal(false);
-  error = signal<TuiValidationError | null>(null);
 
-  onSubmit() {
-    if (this.form.invalid) return;
+  async onSubmit(event: Event) {
+    event.preventDefault();
+    if (this.form.invalid) {
+      this.notifications.showError('Please fill in all required fields correctly');
+      return;
+    }
 
     this.loading.set(true);
-    this.error.set(null);
 
-    this.authService.register(
-      this.form.value.email!,
-      this.form.value.password!
-    ).subscribe({
-      next: () => {
-        this.router.navigate(['/dashboard']);
-      },
-      error: (err) => {
-        this.loading.set(false);
-        this.error.set(new TuiValidationError(err.error?.error || 'Registration failed'));
-      }
-    });
+    try {
+      await firstValueFrom(this.authService.register(
+        this.form.value.email!,
+        this.form.value.password!,
+        this.form.value.name!,
+        this.form.value.currency?.trim().toUpperCase() || 'EUR'
+      ));
+      this.router.navigate(['/dashboard']);
+    } catch (err) {
+      this.loading.set(false);
+      this.notifications.showError(err, 'Registration failed');
+    }
   }
 }

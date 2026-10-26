@@ -1,21 +1,23 @@
-import { Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
-import { TuiButton, TuiError, TuiIcon, TuiLink, TuiTextfield } from '@taiga-ui/core';
+import { TuiButton, TuiIcon, TuiInput, TuiLink } from '@taiga-ui/core';
 import { AuthService } from '../../core/auth.service';
+import { NotificationService } from '../../core/notification.service';
 import { TuiPassword } from '@taiga-ui/kit';
-import { TuiValidationError } from '@taiga-ui/cdk/classes';
+import { firstValueFrom } from 'rxjs';
 
 @Component({
   selector: 'app-login',
-  standalone: true,
-  imports: [ReactiveFormsModule, TuiLink, RouterLink, TuiButton, TuiTextfield, TuiPassword, TuiIcon, TuiError],
+  imports: [ReactiveFormsModule, TuiLink, RouterLink, TuiButton, TuiInput, TuiPassword, TuiIcon],
   templateUrl: './login.component.html',
-  styleUrl: './login.component.scss'
+  styleUrl: './login.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LoginComponent {
-  private authService = inject(AuthService);
-  private router = inject(Router);
+  private readonly authService = inject(AuthService);
+  private readonly router = inject(Router);
+  private readonly notifications = inject(NotificationService);
 
   form = new FormGroup({
     email: new FormControl('', [Validators.required, Validators.email]),
@@ -23,25 +25,25 @@ export class LoginComponent {
   });
 
   loading = signal(false);
-  error = signal<TuiValidationError | null>(null);
-
-  onSubmit() {
-    if (this.form.invalid) return;
+ 
+  async onSubmit(event: Event) {
+    event.preventDefault();
+    if (this.form.invalid) {
+      this.notifications.showError('Please fill in all required fields correctly');
+      return;
+    }
     
     this.loading.set(true);
-    this.error.set(null);
-
-    this.authService.login(
-      this.form.value.email!,
-      this.form.value.password!
-    ).subscribe({
-      next: () => {
-        this.router.navigate(['/dashboard']);
-      },
-      error: (err) => {
-        this.loading.set(false);
-        this.error.set(new TuiValidationError(err.error?.error || 'Login failed'));
-      }
-    });
+ 
+    try {
+      await firstValueFrom(this.authService.login(
+        this.form.value.email!,
+        this.form.value.password!
+      ));
+      this.router.navigate(['/dashboard']);
+    } catch (err) {
+      this.loading.set(false);
+      this.notifications.showError(err, 'Login failed');
+    }
   }
-}
+} 

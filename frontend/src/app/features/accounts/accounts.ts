@@ -1,29 +1,52 @@
-import { ChangeDetectionStrategy, Component, computed, inject, INJECTOR, signal } from '@angular/core';
-import { DecimalPipe } from '@angular/common';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { MoneyPipe } from '../../core/money.pipe';
 import { AccountsState } from '../../core/accounts.state';
-import { Account } from '../../models/account';
-import { TUI_CONFIRM, TuiConfirmData } from '@taiga-ui/kit';
-import { TuiButton, TuiDialogService, TuiLoader } from '@taiga-ui/core';
-import { PolymorpheusComponent } from '@taiga-ui/polymorpheus';
-import { firstValueFrom } from 'rxjs';
+import { AccessLevel, Account, accessLevelOf } from '../../models/account';
+import { TuiButton, TuiDataList, TuiDropdown, TuiLoader } from '@taiga-ui/core';
+import { TuiChevron } from '@taiga-ui/kit';
+import { AccountDialogService } from './account-dialog.service';
 
 @Component({
   selector: 'app-accounts',
-  imports: [TuiButton, TuiLoader, DecimalPipe],
+  imports: [TuiButton, TuiChevron, TuiDataList, TuiDropdown, TuiLoader, MoneyPipe],
   templateUrl: './accounts.html',
   styleUrl: './accounts.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class Accounts {
   readonly accountsState = inject(AccountsState);
-  private readonly dialogs = inject(TuiDialogService);
-  private readonly injector = inject(INJECTOR);
+  private readonly accountDialogs = inject(AccountDialogService);
+
+  /**
+   * Blocks per access level, highest first, sorted by name within, as in the
+   * side list; below admin an account is someone else's and says whose.
+   */
+  readonly sections = computed(() => {
+    const sorted = [...this.accountsState.visibleAccounts()].sort((a, b) =>
+      accessLevelOf(b) - accessLevelOf(a) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    const sections: { access_level: AccessLevel; accounts: (Account & { displayName: string })[] }[] = [];
+    for (const account of sorted) {
+      const level = accessLevelOf(account);
+      const displayName = level < 3 && account.owner_name
+        ? `${account.name} (${account.owner_name})`
+        : account.name;
+      const last = sections[sections.length - 1];
+      if (last?.access_level === level) last.accounts.push({ ...account, displayName });
+      else sections.push({ access_level: level, accounts: [{ ...account, displayName }] });
+    }
+    return sections;
+  });
 
   readonly selectedId = signal<number | null>(null);
   readonly selectedAccount = computed(() => {
     const id = this.selectedId();
     if (id === null) return null;
-    return this.accountsState.accounts().find(a => a.id === id) ?? null;
+    return this.accountsState.visibleAccounts().find(a => a.id === id) ?? null;
+  });
+  /** Owner or admin: the backend requires that to edit or delete an account. */
+  readonly canManage = computed(() => {
+    const account = this.selectedAccount();
+    return !!account && accessLevelOf(account) >= 3;
   });
 
   setAsSelected(account: Account) {
@@ -31,11 +54,7 @@ export class Accounts {
   }
 
   async openCreateDialog(): Promise<void> {
-    const { AccountForm } = await import('./account-form/account-form');
-    const account = await firstValueFrom(this.dialogs.open<Account | null>(
-      new PolymorpheusComponent(AccountForm, this.injector),
-      { data: null, label: 'Add Account', size: 's' }
-    ), { defaultValue: null });
+    const account = await this.accountDialogs.openCreate();
     if (account !== null) {
       this.selectedId.set(account.id);
     }
@@ -43,28 +62,34 @@ export class Accounts {
 
   async openEditDialog(): Promise<void> {
     const account = this.selectedAccount();
+    if (!account || !this.canManage()) return;
+    await this.accountDialogs.openEdit(account);
+  }
+
+  async openSharingDialog(): Promise<void> {
+    const account = this.selectedAccount();
     if (!account) return;
-    const { AccountForm } = await import('./account-form/account-form');
-    await firstValueFrom(this.dialogs.open<Account | null>(
-      new PolymorpheusComponent(AccountForm, this.injector),
-      { data: account, label: 'Edit Account', size: 's' }
-    ), { defaultValue: null });
+    await this.accountDialogs.openSharing(account);
   }
 
   async openDeleteDialog(): Promise<void> {
     const account = this.selectedAccount();
+    if (!account || !this.canManage()) return;
+    if (await this.accountDialogs.openDelete(account)) {
+      this.selectedId.set(null);
+    }
+  }
+
+  async openPurgeDialog(): Promise<void> {
+    const account = this.selectedAccount();
     if (!account) return;
-    const data: TuiConfirmData = {
-      content: `Delete "${account.name}"?`,
-      yes: 'Delete',
-      no: 'Cancel',
-    };
-    const confirmed = await firstValueFrom(
-      this.dialogs.open<boolean>(TUI_CONFIRM, { label: 'Delete Account', size: 's', data }),
-      { defaultValue: false }
-    );
-    if (confirmed) {
-      await firstValueFrom(this.accountsState.delete(account.id));
+    await this.accountDialogs.openPurgeTransactions(account);
+  }
+
+  async openDeleteWithTransactionsDialog(): Promise<void> {
+    const account = this.selectedAccount();
+    if (!account) return;
+    if (await this.accountDialogs.openDeleteWithTransactions(account)) {
       this.selectedId.set(null);
     }
   }

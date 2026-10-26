@@ -1,10 +1,16 @@
 CREATE TABLE IF NOT EXISTS accounts (
   id SERIAL PRIMARY KEY,
   user_id INTEGER REFERENCES users(id) ON DELETE CASCADE NOT NULL,
-  name VARCHAR(255) NOT NULL,
+  name TEXT NOT NULL,
   currency TEXT NOT NULL,
-  start_balance INTEGER NOT NULL DEFAULT 0,
+  scale INTEGER NOT NULL DEFAULT 2,
+  start_balance NUMERIC(24, 0) NOT NULL DEFAULT 0,
+  deleted BOOLEAN DEFAULT false,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE accounts
+  ADD CONSTRAINT chk_accounts_currency_format
+  CHECK (currency ~ '^[A-Z]{3,4}$');
 
 CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);

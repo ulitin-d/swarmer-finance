@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { validate } from '../middleware/validation';
+import { validate, validateIdParam } from '../middleware/validation';
 import * as categoryService from '../services/categories';
 
 const router = Router();
 
 router.use(authMiddleware);
+router.param('id', validateIdParam);
 
 const createCategorySchema = z.object({
   name: z.string().min(1).max(255),
@@ -17,6 +18,7 @@ const createCategorySchema = z.object({
 
 const updateCategorySchema = z.object({
   name: z.string().min(1).max(255).optional(),
+  parentId: z.number().int().positive().optional(),
   color: z.string().optional(),
   icon: z.string().optional(),
 });
@@ -35,40 +37,38 @@ router.post('/', validate(createCategorySchema), async (req: AuthRequest, res, n
     const { name, parentId, color, icon } = req.body;
     const category = await categoryService.createCategory(req.userId!, name, parentId, color, icon);
     res.json({ data: category, error: null });
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'statusCode' in error) {
-      const err = error as { statusCode: number; message: string };
-      return res.status(err.statusCode).json({ data: null, error: err.message });
-    }
+  } catch (error) {
     next(error);
   }
 });
 
 router.put('/:id', validate(updateCategorySchema), async (req: AuthRequest, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
-    const { name, color, icon } = req.body;
-    const category = await categoryService.updateCategory(id, req.userId!, name, color, icon);
+    const id = parseInt(req.params.id as string, 10);
+    const { name, color, icon, parentId } = req.body;
+    const category = await categoryService.updateCategory(id, req.userId!, name, color, icon, parentId);
     res.json({ data: category, error: null });
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'statusCode' in error) {
-      const err = error as { statusCode: number; message: string };
-      return res.status(err.statusCode).json({ data: null, error: err.message });
-    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:id/delete-preview', async (req: AuthRequest, res, next) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    const preview = await categoryService.getDeletePreview(id, req.userId!);
+    res.json({ data: preview, error: null });
+  } catch (error) {
     next(error);
   }
 });
 
 router.delete('/:id', async (req: AuthRequest, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(req.params.id as string, 10);
     await categoryService.deleteCategory(id, req.userId!);
     res.json({ data: { success: true }, error: null });
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'statusCode' in error) {
-      const err = error as { statusCode: number; message: string };
-      return res.status(err.statusCode).json({ data: null, error: err.message });
-    }
+  } catch (error) {
     next(error);
   }
 });

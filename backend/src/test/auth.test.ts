@@ -33,6 +33,20 @@ describe('Auth API', () => {
       expect(res.body.error).toBe('Email already registered');
     });
 
+    it('treats emails case-insensitively: stores lowercase, logs in and refuses duplicates in any case', async () => {
+      const email = `Mixed${Date.now()}@Example.com`;
+      const reg = await request(app).post('/api/auth/register').send({ email, password: 'password123' });
+      expect(reg.status).toBe(200);
+      expect(reg.body.data.user.email).toBe(email.toLowerCase());
+
+      const login = await request(app).post('/api/auth/login').send({ email: email.toUpperCase(), password: 'password123' });
+      expect(login.status).toBe(200);
+
+      const dup = await request(app).post('/api/auth/register').send({ email: email.toLowerCase(), password: 'password123' });
+      expect(dup.status).toBe(400);
+      expect(dup.body.error).toBe('Email already registered');
+    });
+
     it('should return error for invalid email', async () => {
       const res = await request(app)
         .post('/api/auth/register')
@@ -49,6 +63,51 @@ describe('Auth API', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('password');
+    });
+
+    it('should return error for invalid currency format', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({ email: `test7${Date.now()}@example.com`, password: 'password123', currency: 'usd' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Currency');
+    });
+
+    it('should default currency_scale to 2 when not provided', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({ email: `test3${Date.now()}@example.com`, password: 'password123' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.user.currency_scale).toBe(2);
+    });
+
+    it('should ignore a client-supplied currencyScale and derive it from currency', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({ email: `test4${Date.now()}@example.com`, password: 'password123', currencyScale: 8 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.user.currency_scale).toBe(2);
+    });
+
+    it('should derive currency_scale of 0 for a zero-decimal currency', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({ email: `test5${Date.now()}@example.com`, password: 'password123', currency: 'JPY' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.user.currency_scale).toBe(0);
+    });
+
+    it('should derive currency_scale of 3 for a three-decimal currency', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({ email: `test6${Date.now()}@example.com`, password: 'password123', currency: 'BHD' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.user.currency_scale).toBe(3);
     });
   });
 

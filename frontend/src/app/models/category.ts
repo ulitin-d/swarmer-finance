@@ -5,30 +5,44 @@ export interface Category {
   parent_id: number | null;
   color: string;
   icon: string;
+  created_at: string;
+  /** Display name of the category's owner; null for system categories. */
+  owner_name: string | null;
   fullName: string;
   root_id: number;
   children?: Category[];
 }
 
-export const withComputedFields = (categories: Category[], ancestorPath = '', root_id = 0): Category[] =>
-  categories.map(category => {
-    const isRoot = category.parent_id === null;
-    const currentRootId = isRoot ? category.id : root_id;
-    const fullName = isRoot
-      ? category.name
-      : ancestorPath ? `${ancestorPath}/${category.name}` : category.name;
-    const nextPath = isRoot ? '' : fullName;
-    return {
-      ...category,
-      fullName,
-      root_id: currentRootId,
-      children: category.children
-        ? withComputedFields(category.children, nextPath, currentRootId)
-        : undefined,
-    };
-  });
+/** Ids of the system categories the backend seeds (migrations 002 and 012). */
+export const SystemCategory = {
+  Income: 1,
+  Expenses: 2,
+  UncategorizedIncome: 3,
+  UncategorizedExpense: 4,
+  NetworkFees: 5,
+} as const;
 
-export const findCategoryById = (id: number, categories: Category[]): Category | null => {
+export interface CategoryCreatePayload {
+  name: string;
+  parentId: number;
+  color?: string;
+  icon?: string;
+}
+
+export type CategoryUpdatePayload = Partial<CategoryCreatePayload>;
+
+/** What deleting a category would do; see GET /api/categories/:id/delete-preview. */
+export interface CategoryDeletePreview {
+  transactions: number;
+  subcategories: number;
+  transactionsTo: string;
+  subcategoriesTo: string;
+  /** Subcategory names already taken under the new parent; deleting is refused. */
+  conflicts: string[];
+}
+
+export const findCategoryById = (id: number | undefined, categories: Category[]): Category | null => {
+  if (id === undefined) return null;
   for (const category of categories) {
     if (category.id === id) {
       return category;

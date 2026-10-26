@@ -1,0 +1,185 @@
+.review {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    // The dialog gives the table a bounded height so the header and actions
+    // stay put while a long statement scrolls between them.
+    max-block-size: 70vh;
+    // The dialog has no size and shrinks to its content, and the table no
+    // longer pushes it wider (see .col-desc), so claim most of the screen here.
+    inline-size: min(80rem, calc(100vw - 10rem));
+}
+
+.summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.75rem;
+    align-items: baseline;
+}
+
+.counts {
+    color: var(--tui-text-secondary);
+    font-size: 0.875rem;
+}
+
+.scroll {
+    flex: 1;
+    overflow: auto;
+    border: 1px solid var(--tui-border-normal);
+    border-radius: var(--tui-radius-m);
+}
+
+.rows {
+    inline-size: 100%;
+    border-collapse: collapse;
+
+    th,
+    td {
+        padding: 0.375rem 0.5rem;
+        text-align: left;
+        border-block-end: 1px solid var(--tui-border-normal);
+    }
+
+    td {
+        font-size: 0.875rem;
+    }
+
+    th {
+        position: sticky;
+        inset-block-start: 0;
+        z-index: 1;
+        background: var(--tui-background-elevation-1);
+        font-size: 0.75rem;
+        color: var(--tui-text-secondary);
+        font-weight: 500;
+    }
+
+    tbody tr:last-child td {
+        border-block-end: none;
+    }
+}
+
+// An unselected row stays legible but recedes — it is excluded, not invalid.
+.is-excluded {
+    opacity: 0.5;
+}
+
+// Nested under .rows to outrank the shared th/td padding.
+.rows .col-check {
+    inline-size: 1rem;
+    padding-inline-end: 0;
+
+    // Block display drops the inline baseline gap that pushed it off-centre.
+    input {
+        display: block;
+    }
+}
+
+.col-date {
+    inline-size: 6.5rem;
+    white-space: nowrap;
+}
+
+// Nested under .rows to outrank the shared th/td alignment.
+.rows .col-amount {
+    inline-size: 7rem;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+
+    &.is-income {
+        color: var(--tui-text-positive);
+    }
+}
+
+// min-inline-size keeps the select from being squeezed by .col-desc, which
+// claims all spare width.
+.col-category {
+    inline-size: 20rem;
+    min-inline-size: 20rem;
+}
+
+.category-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+
+    app-category-select,
+    app-account-select {
+        flex: 1;
+        min-inline-size: 0;
+    }
+}
+
+.converted {
+    flex-shrink: 0;
+    inline-size: 1rem;
+    font-size: 1rem;
+    color: var(--tui-text-tertiary);
+}
+
+// Nested under .rows to outrank the shared th/td padding and alignment.
+.rows .col-status {
+    inline-size: 1rem;
+    padding-inline: 0.375rem 0;
+    text-align: center;
+}
+
+.status {
+    // Block display, like the checkbox, so both centre on the row instead of
+    // the icon sitting on the text baseline below it.
+    display: block;
+    margin-inline: auto;
+    font-size: 1rem;
+}
+
+.status-new {
+    color: var(--tui-status-positive);
+}
+
+.status-possible_duplicate {
+    color: var(--tui-status-warning);
+}
+
+.status-duplicate {
+    color: var(--tui-status-negative);
+}
+
+// Takes all spare width; max-inline-size: 0 stops long text from widening the
+// table, so the description truncates at the column edge instead.
+.col-desc {
+    inline-size: 100%;
+    min-inline-size: 12rem;
+    max-inline-size: 0;
+}
+
+// A <td> must keep its table display role, so the two lines stack inside it.
+.payee,
+.description {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.description {
+    font-size: 0.75rem;
+    color: var(--tui-text-secondary);
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.selected-count {
+    margin-inline-end: auto;
+    color: var(--tui-text-secondary);
+    font-size: 0.875rem;
+}
+
+.transfer-toggle {
+    flex-shrink: 0;
+}

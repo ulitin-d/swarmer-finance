@@ -1,0 +1,122 @@
+<div class="review">
+    <header class="summary">
+        <span><strong>{{ summary.total }}</strong> rows · {{ formatName }}</span>
+        <span class="counts">
+            {{ summary.new }} new
+            @if (summary.possibleDuplicate) { · {{ summary.possibleDuplicate }} possible duplicates }
+            @if (summary.duplicate) { · {{ summary.duplicate }} already imported }
+        </span>
+    </header>
+
+    <div class="scroll">
+        <table class="rows">
+            <thead>
+                <tr>
+                    <th class="col-check">
+                        <input
+                            tuiCheckbox
+                            size="s"
+                            type="checkbox"
+                            aria-label="Select all rows"
+                            [ngModel]="allSelected()"
+                            (ngModelChange)="toggleAll($event)" />
+                    </th>
+                    <th class="col-status" aria-label="Status"></th>
+                    <th class="col-date">Date</th>
+                    <th class="col-desc">Description</th>
+                    <th class="col-amount">Amount</th>
+                    <th class="col-category">Category / Account</th>
+                </tr>
+            </thead>
+            <tbody>
+                @for (row of rows(); track row.index) {
+                    <tr [class.is-excluded]="!row.selected">
+                        <td class="col-check">
+                            <input
+                                tuiCheckbox
+                                size="s"
+                                type="checkbox"
+                                [attr.aria-label]="'Import ' + row.description"
+                                [ngModel]="row.selected"
+                                (ngModelChange)="toggle(row.index, $event)" />
+                        </td>
+                        <td class="col-status">
+                            <tui-icon
+                                class="status"
+                                [class]="'status-' + row.status"
+                                [icon]="statusIcon(row.status)"
+                                [tuiHint]="statusLabel(row.status)"
+                                [attr.aria-label]="statusLabel(row.status)"
+                                role="img" />
+                        </td>
+                        <td class="col-date">{{ row.date | date: 'dd MMM yyyy' }}</td>
+                        <td class="col-desc">
+                            <span class="payee" [title]="row.payee || row.description">{{ row.payee || row.description }}</span>
+                            @if (row.payee && row.description) {
+                                <span class="description" [title]="row.description">{{ row.description }}</span>
+                            }
+                        </td>
+                        <td class="col-amount" [class.is-income]="row.amount > 0">
+                            {{ row.amount | money: account.currency : account.scale }}
+                        </td>
+                        <td class="col-category">
+                            <div class="category-cell">
+                                <button
+                                    tuiIconButton
+                                    type="button"
+                                    size="xs"
+                                    class="transfer-toggle"
+                                    iconStart="@tui.arrow-left-right"
+                                    [appearance]="row.transfer ? 'accent' : 'flat'"
+                                    [attr.aria-pressed]="row.transfer"
+                                    [tuiHint]="row.transfer ? 'Make income/expense' : 'Make transfer'"
+                                    [attr.aria-label]="row.transfer ? 'Make income/expense' : 'Make transfer'"
+                                    (click)="setTransfer(row.index, !row.transfer)"></button>
+                                @if (row.transfer) {
+                                    <app-account-select
+                                        [label]="''"
+                                        size="s"
+                                        [excludeId]="account.id"
+                                        [ngModel]="row.transferAccount"
+                                        (ngModelChange)="setTransferAccount(row.index, $event)" />
+                                } @else {
+                                    <app-category-select
+                                        [rootId]="rootIdFor(row)"
+                                        [label]="''"
+                                        size="s"
+                                        [ngModel]="categoryOf(row)"
+                                        (ngModelChange)="setCategory(row.index, $event)" />
+                                }
+                                @if (isConverted(row)) {
+                                    <tui-icon
+                                        class="converted"
+                                        icon="@tui.coins"
+                                        tuiHint="Amount converted at today's rate"
+                                        aria-label="Amount converted at today's rate" />
+                                }
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <footer class="actions">
+        @if (loading()) {
+            <tui-loader size="m" />
+        }
+        <span class="selected-count">{{ selectedCount() }} selected</span>
+        <button tuiButton size="s" type="button" appearance="outline" (click)="cancel()">
+            Cancel
+        </button>
+        <button
+            tuiButton
+            size="s"
+            type="button"
+            [disabled]="!canSubmit() || loading()"
+            (click)="submit()">
+            Import {{ selectedCount() }}
+        </button>
+    </footer>
+</div>

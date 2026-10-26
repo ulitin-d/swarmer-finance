@@ -1,0 +1,504 @@
+import { createHash } from 'crypto';
+import request from 'supertest';
+import { createTestApp } from './testApp';
+import { pool } from '../db';
+import { bitcoinProvider } from '../services/chain/bitcoin';
+import { ChainTx } from '../services/chain';
+import { planTx, syncAccount } from '../services/chainSync';
+import { purgeAccount } from '../services/accounts';
+import { Account } from '../types';
+
+const app = createTestApp();
+
+describe('planTx', () => {
+  const peer = { id: 9 } as Account;
+  const peers = new Map([['bc1qpeer', peer]]);
+  const base = { txid: 't', date: '2026-05-29' };
+
+  it('files a receipt as income from the first sender', () => {
+    const plan = planTx({ ...base, fee: 0, transfers: [{ counterparty: 'bc1qx', amount: 5000 }] }, peers);
+    expect(plan).toEqual({ ...base, fee: 0, income: { amount: 5000, from: 'bc1qx', peer: undefined } });
+  });
+
+  it('marks a receipt from a synced wallet', () => {
+    const plan = planTx({ ...base, fee: 0, transfers: [{ counterparty: 'bc1qpeer', amount: 5000 }] }, peers);
+    expect(plan.income?.peer).toBe(peer);
+  });
+
+  it('splits a payment into transfer, expense and fee', () => {
+    const plan = planTx({
+      ...base, fee: 100, transfers: [
+        { counterparty: 'bc1qx', amount: -1000 },
+        { counterparty: 'bc1qpeer', amount: -7000 },
+        { counterparty: 'bc1qpeer', amount: -500 },
+        { counterparty: 'bc1qy', amount: -2000 },
+      ],
+    }, peers);
+    expect(plan).toEqual({
+      ...base, fee: 100,
+      transfer: { amount: 7500, peer },
+      expense: { amount: 3000, to: 'bc1qx' },
+    });
+  });
+
+  it('reduces a consolidation to its fee', () => {
+    expect(planTx({ ...base, fee: 300, transfers: [] }, peers)).toEqual({ ...base, fee: 300 });
+  });
+});
+
+describe('syncAccount', () => {
+  let userId: number;
+  let otherUserId: number;
+  let walletA: number;
+  let walletB: number;
+  let exchange: number;
+  let shop: number;
+  let spy: jest.SpyInstance;
+  // Per-address histories the mocked provider serves, filtered by `known`
+  // exactly like the real one.
+  const history = new Map<string, ChainTx[]>();
+
+  const register = async (prefix: string) => {
+    const email = `${prefix}${Date.now()}@example.com`;
+    await request(app).post('/api/auth/register').send({ email, password: 'password123' });
+    return (await pool.query('SELECT id FROM users WHERE email = $1', [email])).rows[0].id as number;
+  };
+  const wallet = async (owner: number, name: string, settings: object) =>
+    (await pool.query(
+      `INSERT INTO accounts (user_id, name, currency, scale, start_balance, type, settings)
+       VALUES ($1, $2, 'BTC', 8, 0, 'crypto', $3) RETURNING id`,
+      [owner, name, JSON.stringify(settings)]
+    )).rows[0].id as number;
+  const rows = async (accountId: number) =>
+    (await pool.query(
+      `SELECT debit_account_id, credit_account_id, debit::int, credit::int, category_id, payee, import_hash
+       FROM transactions WHERE debit_account_id = $1 OR credit_account_id = $1 ORDER BY import_hash`,
+      [accountId]
+    )).rows;
+
+  beforeAll(async () => {
+    userId = await register('sync');
+    otherUserId = await register('syncother');
+    walletA = await wallet(userId, 'A', { address: 'bc1qa', blockchain: 'bitcoin' });
+    walletB = await wallet(userId, 'B', { address: 'bc1qb', blockchain: 'bitcoin' });
+    exchange = await wallet(userId, 'Exchange', {});
+    shop = (await pool.query(
+      'SELECT id FROM categories WHERE user_id = $1 AND parent_id = 2 LIMIT 1', [userId]
+    )).rows[0].id;
+    spy = jest.spyOn(bitcoinProvider, 'fetchNewTxs').mockImplementation(async (address, _currency, known) =>
+      (history.get(address) ?? []).filter(t => !known.has(t.txid))
+    );
+  });
+
+  afterAll(async () => {
+    spy.mockRestore();
+    for (const id of [userId, otherUserId]) {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [id]);
+      await pool.query('DELETE FROM account_shares WHERE user_id = $1', [id]);
+      await pool.query('DELETE FROM accounts WHERE user_id = $1', [id]);
+      await pool.query('DELETE FROM categories WHERE user_id = $1', [id]);
+      await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    }
+  });
+
+  beforeEach(async () => {
+    history.clear();
+    await pool.query('DELETE FROM transactions WHERE user_id = ANY($1::int[])', [[userId, otherUserId]]);
+    await pool.query('DELETE FROM chain_seen_txids WHERE account_id = ANY($1::int[])', [[walletA, walletB]]);
+    await pool.query(
+      `UPDATE accounts SET settings = $2, deleted = false WHERE id = $1`,
+      [walletB, JSON.stringify({ address: 'bc1qb', blockchain: 'bitcoin' })]
+    );
+  });
+
+  const tx = (txid: string, fee: number, transfers: [string, number][]): ChainTx =>
+    ({ txid, date: '2026-05-29', fee, transfers: transfers.map(([counterparty, amount]) => ({ counterparty, amount })) });
+
+  it('files a receipt as uncategorised income', async () => {
+    history.set('bc1qa', [tx('r1', 0, [['bc1qx', 5000]])]);
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 1, merged: 0, fees: 0, adopted: 0, removed: 0 });
+    expect(await rows(walletA)).toEqual([
+      { debit_account_id: null, credit_account_id: walletA, debit: 5000, credit: 5000, category_id: 3, payee: 'bc1qx', import_hash: 'r1' },
+    ]);
+  });
+
+  it('files a payment as expense plus a Network fees row', async () => {
+    history.set('bc1qa', [tx('p1', 200, [['bc1qx', -3000]])]);
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 1, merged: 0, fees: 1, adopted: 0, removed: 0 });
+    expect(await rows(walletA)).toEqual([
+      { debit_account_id: walletA, credit_account_id: null, debit: 3000, credit: 3000, category_id: 4, payee: 'bc1qx', import_hash: 'p1' },
+      { debit_account_id: walletA, credit_account_id: null, debit: 200, credit: 200, category_id: 5, payee: null, import_hash: 'p1:fee' },
+    ]);
+  });
+
+  it('files a consolidation as its fee alone', async () => {
+    history.set('bc1qa', [tx('k1', 300, [])]);
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 1, adopted: 0, removed: 0 });
+    expect(await rows(walletA)).toHaveLength(1);
+  });
+
+  it('files a payment to another synced wallet as one transfer, and re-sync is a no-op', async () => {
+    history.set('bc1qa', [tx('t1', 100, [['bc1qb', -7000], ['bc1qx', -1000]])]);
+    history.set('bc1qb', [tx('t1', 0, [['bc1qa', 7000]])]);
+
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 2, merged: 0, fees: 1, adopted: 0, removed: 0 });
+    await expect(syncAccount(userId, walletB)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 0, removed: 0 });
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 0, removed: 0 });
+
+    expect(await rows(walletA)).toEqual([
+      { debit_account_id: walletA, credit_account_id: walletB, debit: 7000, credit: 7000, category_id: null, payee: 'bc1qb', import_hash: 't1' },
+      { debit_account_id: walletA, credit_account_id: null, debit: 100, credit: 100, category_id: 5, payee: null, import_hash: 't1:fee' },
+      { debit_account_id: walletA, credit_account_id: null, debit: 1000, credit: 1000, category_id: 4, payee: 'bc1qx', import_hash: 't1:out' },
+    ]);
+  });
+
+  it('merges into the receiver row when the receiver synced first', async () => {
+    history.set('bc1qb', [tx('t2', 0, [['bc1qa', 7000]])]);
+    history.set('bc1qa', [tx('t2', 100, [['bc1qb', -7000]])]);
+
+    await expect(syncAccount(userId, walletB)).resolves.toEqual({ added: 1, merged: 0, fees: 0, adopted: 0, removed: 0 });
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 1, fees: 1, adopted: 0, removed: 0 });
+
+    expect(await rows(walletB)).toEqual([
+      { debit_account_id: walletA, credit_account_id: walletB, debit: 7000, credit: 7000, category_id: null, payee: 'bc1qa', import_hash: 't2' },
+    ]);
+  });
+
+  it('re-merges a transfer when the purged sender wallet syncs again', async () => {
+    history.set('bc1qa', [tx('t3', 100, [['bc1qb', -7000]])]);
+    history.set('bc1qb', [tx('t3', 0, [['bc1qa', 7000]])]);
+    await syncAccount(userId, walletA);
+
+    await expect(purgeAccount(walletA, userId, false)).resolves.toEqual({ deleted: 1, detached: 1 });
+    expect(await rows(walletB)).toEqual([
+      { debit_account_id: null, credit_account_id: walletB, debit: 7000, credit: 7000, category_id: 3, payee: 'bc1qb', import_hash: 't3' },
+    ]);
+
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 1, fees: 1, adopted: 0, removed: 0 });
+    expect(await rows(walletB)).toEqual([
+      { debit_account_id: walletA, credit_account_id: walletB, debit: 7000, credit: 7000, category_id: null, payee: 'bc1qb', import_hash: 't3' },
+    ]);
+  });
+
+  it('re-merges a transfer when the purged receiver wallet syncs again', async () => {
+    history.set('bc1qa', [tx('t4', 100, [['bc1qb', -7000]])]);
+    history.set('bc1qb', [tx('t4', 0, [['bc1qa', 7000]])]);
+    await syncAccount(userId, walletA);
+
+    await expect(purgeAccount(walletB, userId, false)).resolves.toEqual({ deleted: 0, detached: 1 });
+    expect((await rows(walletA)).find(r => r.import_hash === 't4')).toMatchObject(
+      { debit_account_id: walletA, credit_account_id: null, category_id: 4 }
+    );
+
+    await expect(syncAccount(userId, walletB)).resolves.toEqual({ added: 0, merged: 1, fees: 0, adopted: 0, removed: 0 });
+    expect((await rows(walletA)).find(r => r.import_hash === 't4')).toMatchObject(
+      { debit_account_id: walletA, credit_account_id: walletB, debit: 7000, credit: 7000, category_id: null }
+    );
+  });
+
+  it('overrides a hand-set transfer source on the receiver row', async () => {
+    history.set('bc1qb', [tx('t3', 0, [['bc1qa', 7000]])]);
+    history.set('bc1qa', [tx('t3', 100, [['bc1qb', -7000]])]);
+    await syncAccount(userId, walletB);
+    await pool.query(
+      `UPDATE transactions SET debit_account_id = $1, category_id = NULL WHERE import_hash = 't3'`,
+      [exchange]
+    );
+
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 1, fees: 1, adopted: 0, removed: 0 });
+    const [merged] = await rows(walletB);
+    expect(merged.debit_account_id).toBe(walletA);
+  });
+
+  it('merges into the sender row when the receiver became synced later, splitting off the rest', async () => {
+    await pool.query(`UPDATE accounts SET settings = '{}' WHERE id = $1`, [walletB]);
+    history.set('bc1qa', [tx('t4', 100, [['bc1qb', -7000], ['bc1qx', -1000]])]);
+    await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 1, merged: 0, fees: 1, adopted: 0, removed: 0 });
+    await pool.query(`UPDATE transactions SET category_id = $1 WHERE import_hash = 't4'`, [shop]);
+
+    await pool.query(
+      `UPDATE accounts SET settings = $2 WHERE id = $1`,
+      [walletB, JSON.stringify({ address: 'bc1qb', blockchain: 'bitcoin' })]
+    );
+    history.set('bc1qb', [tx('t4', 0, [['bc1qa', 7000]])]);
+    await expect(syncAccount(userId, walletB)).resolves.toEqual({ added: 0, merged: 1, fees: 0, adopted: 0, removed: 0 });
+
+    expect(await rows(walletA)).toEqual([
+      { debit_account_id: walletA, credit_account_id: walletB, debit: 7000, credit: 7000, category_id: null, payee: 'bc1qb', import_hash: 't4' },
+      { debit_account_id: walletA, credit_account_id: null, debit: 100, credit: 100, category_id: 5, payee: null, import_hash: 't4:fee' },
+      { debit_account_id: walletA, credit_account_id: null, debit: 1000, credit: 1000, category_id: shop, payee: 'bc1qb', import_hash: 't4:out' },
+    ]);
+  });
+
+  it('suggests categories from history by payee', async () => {
+    for (let i = 0; i < 3; i++) {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, date, payee)
+         VALUES ($1, $2, $3, 10, 10, '2026-01-01', 'bc1qshop')`,
+        [userId, shop, exchange]
+      );
+    }
+    history.set('bc1qa', [tx('s1', 0, [['bc1qshop', -500]])]);
+    await syncAccount(userId, walletA);
+    const [expense] = (await rows(walletA)).filter(r => r.import_hash === 's1');
+    expect(expense.category_id).toBe(shop);
+  });
+
+  it('files rows with categories resolved for the owner when a co-user syncs', async () => {
+    const otherCategory = (await pool.query(
+      'SELECT id FROM categories WHERE user_id = $1 AND parent_id = 2 LIMIT 1', [otherUserId]
+    )).rows[0].id;
+    await pool.query(
+      'INSERT INTO account_shares (account_id, user_id, level) VALUES ($1, $2, 2), ($3, $2, 2)',
+      [walletA, otherUserId, exchange]
+    );
+    try {
+      for (let i = 0; i < 3; i++) {
+        await pool.query(
+          `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, date, payee)
+           VALUES ($1, $2, $3, 10, 10, '2026-01-01', 'bc1qcafe')`,
+          [otherUserId, otherCategory, exchange]
+        );
+      }
+      history.set('bc1qa', [tx('s2', 0, [['bc1qcafe', -500]])]);
+      await syncAccount(otherUserId, walletA);
+      const [expense] = (await rows(walletA)).filter(r => r.import_hash === 's2');
+      const owner = await pool.query('SELECT user_id FROM categories WHERE id = $1', [expense.category_id]);
+      expect(owner.rows[0].user_id).toBe(userId);
+    } finally {
+      await pool.query('DELETE FROM account_shares WHERE user_id = $1', [otherUserId]);
+    }
+  });
+
+  it('imports older history even when a synced peer filed a whole page of transfers into it first', async () => {
+    // 25 payments B -> A, synced from B's side: every one lands on A as a transfer.
+    const payouts = Array.from({ length: 25 }, (_, i) => `pay${String(i).padStart(2, '0')}`);
+    history.set('bc1qb', payouts.map(id => tx(id, 10, [['bc1qa', -1000]])));
+    await syncAccount(userId, walletB);
+
+    // A's own history: an old receipt from a third party, then the 25 payouts.
+    // The mock mimics Esplora paging: the provider stops at a page it fully knows.
+    const aHistory = [tx('old', 0, [['bc1qx', 5000]]), ...payouts.map(id => tx(id, 0, [['bc1qb', 1000]]))];
+    spy.mockImplementationOnce(async (_address, _currency, known) => {
+      const newestFirst = [...aHistory].reverse();
+      const fresh: ChainTx[] = [];
+      for (let i = 0; i < newestFirst.length; i += 25) {
+        const page = newestFirst.slice(i, i + 25);
+        const unseen = page.filter(t => !known.has(t.txid));
+        fresh.push(...unseen);
+        if (page.length < 25 || unseen.length === 0) break;
+      }
+      return fresh.reverse();
+    });
+
+    await syncAccount(userId, walletA);
+
+    const receipt = (await rows(walletA)).find(r => r.import_hash === 'old');
+    expect(receipt).toMatchObject({ credit_account_id: walletA, credit: 5000 });
+    // The transfers B already filed are left alone, not duplicated.
+    const count = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM transactions WHERE import_hash = ANY($1::text[])`, [payouts]
+    );
+    expect(count.rows[0].n).toBe(25);
+  });
+
+  it('keeps a transfer to one synced wallet when a second synced wallet in the same tx syncs', async () => {
+    const walletC = await wallet(userId, 'C', { address: 'bc1qc', blockchain: 'bitcoin' });
+    try {
+      history.set('bc1qa', [tx('m1', 100, [['bc1qb', -7000], ['bc1qc', -3000]])]);
+      history.set('bc1qc', [tx('m1', 0, [['bc1qa', 3000]])]);
+      history.set('bc1qb', [tx('m1', 0, [['bc1qa', 7000]])]);
+
+      await syncAccount(userId, walletA);
+      await syncAccount(userId, walletC);
+      await syncAccount(userId, walletB);
+
+      expect(await rows(walletB)).toEqual([
+        { debit_account_id: walletA, credit_account_id: walletB, debit: 7000, credit: 7000, category_id: null, payee: 'bc1qb', import_hash: 'm1' },
+      ]);
+      // C files its own income; A's expense already covers that outflow.
+      expect(await rows(walletC)).toEqual([
+        { debit_account_id: null, credit_account_id: walletC, debit: 3000, credit: 3000, category_id: 3, payee: 'bc1qa', import_hash: 'm1' },
+      ]);
+      const a = await rows(walletA);
+      expect(a.find(r => r.import_hash === 'm1:out')).toMatchObject({ debit: 3000 });
+    } finally {
+      await pool.query('DELETE FROM transactions WHERE debit_account_id = $1 OR credit_account_id = $1', [walletC]);
+      await pool.query('DELETE FROM accounts WHERE id = $1', [walletC]);
+    }
+  });
+
+  it('refuses to sync a tracked account whose scale or start balance does not fit the chain', async () => {
+    const legacy = await wallet(userId, 'Legacy', { address: 'bc1qlegacy', blockchain: 'bitcoin' });
+    try {
+      await pool.query('UPDATE accounts SET scale = 2 WHERE id = $1', [legacy]);
+      await expect(syncAccount(userId, legacy)).rejects.toMatchObject({ statusCode: 400 });
+      await pool.query('UPDATE accounts SET scale = 8, start_balance = 100 WHERE id = $1', [legacy]);
+      await expect(syncAccount(userId, legacy)).rejects.toMatchObject({ statusCode: 400 });
+    } finally {
+      await pool.query('DELETE FROM accounts WHERE id = $1', [legacy]);
+    }
+  });
+
+  it('refuses a user without write access', async () => {
+    history.set('bc1qa', [tx('x1', 0, [['bc1qx', 5000]])]);
+    await expect(syncAccount(otherUserId, walletA)).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it('refuses an untracked account', async () => {
+    await expect(syncAccount(userId, exchange)).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('refuses a deleted account', async () => {
+    await pool.query('UPDATE accounts SET deleted = true WHERE id = $1', [walletB]);
+    await expect(syncAccount(userId, walletB)).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it('writes nothing when the provider fails', async () => {
+    spy.mockRejectedValueOnce({ statusCode: 502, message: 'Blockchain API unavailable' });
+    await expect(syncAccount(userId, walletA)).rejects.toMatchObject({ statusCode: 502 });
+    expect(await rows(walletA)).toEqual([]);
+  });
+
+  describe('first sync reconciles rows entered by hand', () => {
+    const hex = (n: number) => n.toString(16).padStart(64, '0');
+    let salary: number;
+    let euro: number;
+
+    beforeAll(async () => {
+      salary = (await pool.query(
+        'SELECT id FROM categories WHERE user_id = $1 AND parent_id = 1 LIMIT 1', [userId]
+      )).rows[0].id;
+      euro = (await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, scale, start_balance, type, settings)
+         VALUES ($1, 'Euro', 'EUR', 2, 0, 'bank', '{}') RETURNING id`, [userId]
+      )).rows[0].id;
+    });
+
+    const hand = (f: {
+      debit?: number | null; credit?: number | null; amountDebit: number; amountCredit?: number;
+      category?: number | null; date?: string; description?: string; importHash?: string | null;
+    }) => pool.query(
+      `INSERT INTO transactions (user_id, category_id, debit_account_id, credit_account_id, debit, credit, date, description, import_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      // An expense or income needs a category (chk_transactions_category):
+      // default to Uncategorized, as the service does; a transfer has none.
+      [userId, f.category !== undefined ? f.category : f.debit && f.credit ? null : f.debit ? 4 : 3,
+       f.debit ?? null, f.credit ?? null, f.amountDebit, f.amountCredit ?? f.amountDebit,
+       f.date ?? '2026-05-29', f.description ?? '', f.importHash ?? null]
+    );
+    const seen = async (id: number) =>
+      (await pool.query('SELECT COUNT(*)::int AS n FROM chain_seen_txids WHERE account_id = $1', [id])).rows[0].n;
+
+    it('adopts rows that carry their txid, keeping category and description', async () => {
+      history.set('bc1qa', [1, 2, 3].map(n => tx(hex(n), 0, [['bc1qx', 1000 * n]])));
+      for (const n of [1, 2, 3]) {
+        await hand({ credit: walletA, amountDebit: 1000 * n, category: salary, description: `tx_hash: ${hex(n)}`, date: '2026-05-01' });
+      }
+
+      await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 3, removed: 0 });
+      const after = await pool.query(
+        `SELECT category_id, description, date, payee, import_hash FROM transactions WHERE credit_account_id = $1 ORDER BY import_hash`, [walletA]
+      );
+      expect(after.rows).toEqual([1, 2, 3].map(n => ({
+        category_id: salary, description: `tx_hash: ${hex(n)}`, date: '2026-05-29', payee: 'bc1qx', import_hash: hex(n),
+      })));
+    });
+
+    it('turns a hand-kept wallet into the chain, keeping what matched', async () => {
+      history.set('bc1qa', [tx('p1', 200, [['bc1qx', -3000]]), tx('r1', 0, [['bc1qy', 5000]])]);
+      await hand({ debit: walletA, amountDebit: 3200, category: shop, description: 'Coffee', date: '2026-05-28' });
+      await hand({ credit: walletA, amountDebit: 999, category: salary, date: '2026-05-01' });
+
+      await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 1, merged: 0, fees: 1, adopted: 1, removed: 1 });
+      expect(await rows(walletA)).toEqual([
+        { debit_account_id: walletA, credit_account_id: null, debit: 3000, credit: 3000, category_id: shop, payee: 'bc1qx', import_hash: 'p1' },
+        { debit_account_id: walletA, credit_account_id: null, debit: 200, credit: 200, category_id: 5, payee: null, import_hash: 'p1:fee' },
+        { debit_account_id: null, credit_account_id: walletA, debit: 5000, credit: 5000, category_id: 3, payee: 'bc1qy', import_hash: 'r1' },
+      ]);
+      const desc = await pool.query(`SELECT description FROM transactions WHERE import_hash = 'p1'`);
+      expect(desc.rows[0].description).toBe('Coffee');
+    });
+
+    it('adopts an imported row whose hash is not a chain hash', async () => {
+      history.set('bc1qa', [tx('r2', 0, [['bc1qy', 5000]])]);
+      await hand({ credit: walletA, amountDebit: 5000, category: salary, importHash: createHash('sha256').update('r2-statement-row').digest('hex') });
+
+      await expect(syncAccount(userId, walletA)).resolves.toMatchObject({ added: 0, adopted: 1 });
+      expect((await rows(walletA))[0]).toMatchObject({ import_hash: 'r2', category_id: salary });
+    });
+
+    it('keeps a transfer to an untracked account, correcting only what the chain knows', async () => {
+      history.set('bc1qa', [tx(hex(4), 0, [['bc1qx', -3000]]), tx(hex(5), 0, [['bc1qx', -4000]])]);
+      await hand({ debit: walletA, credit: euro, amountDebit: 2900, amountCredit: 150, description: hex(4) });
+      await hand({ debit: walletA, credit: exchange, amountDebit: 3900, description: hex(5) });
+
+      await expect(syncAccount(userId, walletA)).resolves.toMatchObject({ added: 0, adopted: 2, removed: 0 });
+      expect(await rows(walletA)).toEqual([
+        { debit_account_id: walletA, credit_account_id: euro, debit: 3000, credit: 150, category_id: null, payee: 'bc1qx', import_hash: hex(4) },
+        { debit_account_id: walletA, credit_account_id: exchange, debit: 4000, credit: 4000, category_id: null, payee: 'bc1qx', import_hash: hex(5) },
+      ]);
+    });
+
+    it('leaves an unmatched transfer to its other account, and drops one to a synced wallet', async () => {
+      await hand({ debit: exchange, credit: walletA, amountDebit: 700 });
+      await hand({ debit: walletA, credit: walletB, amountDebit: 800 });
+
+      await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 0, removed: 2 });
+      expect(await rows(walletA)).toEqual([]);
+      expect(await rows(walletB)).toEqual([]);
+      expect(await rows(exchange)).toEqual([
+        { debit_account_id: exchange, credit_account_id: null, debit: 700, credit: 700, category_id: 4, payee: null, import_hash: null },
+      ]);
+    });
+
+    it('leaves an unmatched outbound transfer to its other account as uncategorized income', async () => {
+      await hand({ debit: walletA, credit: exchange, amountDebit: 750 });
+
+      await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 0, removed: 1 });
+      expect(await rows(walletA)).toEqual([]);
+      expect(await rows(exchange)).toEqual([
+        { debit_account_id: null, credit_account_id: exchange, debit: 750, credit: 750, category_id: 3, payee: null, import_hash: null },
+      ]);
+    });
+
+    it('detaches, rather than deletes, an unmatched transfer whose row already carries a hash for the tracked other wallet', async () => {
+      await hand({ debit: walletA, credit: walletB, amountDebit: 850, importHash: 'already-walletbs' });
+
+      await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 0, removed: 1 });
+      expect(await rows(walletA)).toEqual([]);
+      expect(await rows(walletB)).toEqual([
+        { debit_account_id: null, credit_account_id: walletB, debit: 850, credit: 850, category_id: 3, payee: null, import_hash: 'already-walletbs' },
+      ]);
+    });
+
+    it('removes hand rows of an address with no history yet', async () => {
+      await hand({ credit: walletA, amountDebit: 500 });
+      await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 0, removed: 1 });
+      expect(await rows(walletA)).toEqual([]);
+    });
+
+    it('refuses without write access to the other account, changing nothing', async () => {
+      history.set('bc1qa', [tx('r3', 0, [['bc1qy', 5000]])]);
+      await hand({ debit: walletA, credit: exchange, amountDebit: 900 });
+      await pool.query('INSERT INTO account_shares (account_id, user_id, level) VALUES ($1, $2, 2)', [walletA, otherUserId]);
+      try {
+        await expect(syncAccount(otherUserId, walletA)).rejects.toMatchObject({
+          statusCode: 403, message: 'Cannot reconcile: no write access to account Exchange',
+        });
+        expect(await rows(walletA)).toHaveLength(1);
+        expect(await seen(walletA)).toBe(0);
+      } finally {
+        await pool.query('DELETE FROM account_shares WHERE user_id = $1', [otherUserId]);
+      }
+    });
+
+    it('reconciles only on the first sync', async () => {
+      history.set('bc1qa', [tx('r4', 0, [['bc1qy', 5000]])]);
+      await syncAccount(userId, walletA);
+      await hand({ credit: walletA, amountDebit: 1 });
+      await expect(syncAccount(userId, walletA)).resolves.toEqual({ added: 0, merged: 0, fees: 0, adopted: 0, removed: 0 });
+      expect(await rows(walletA)).toHaveLength(2);
+    });
+  });
+});

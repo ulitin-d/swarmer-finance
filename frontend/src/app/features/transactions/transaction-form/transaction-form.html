@@ -1,0 +1,98 @@
+<form [formGroup]="form" (ngSubmit)="onSubmit()" class="form" tuiTextfieldSize="m">
+
+    <!-- Type selector -->
+    <tui-segmented [activeItemIndex]="activeTypeIndex()" (activeItemIndexChange)="activeTypeIndex.set($event)"
+        class="type-selector">
+        <button type="button" [disabled]="!typeAllowed(0)">Expense</button>
+        <button type="button" [disabled]="!typeAllowed(1)">Income</button>
+        <button type="button" [disabled]="!canTransfer() || !typeAllowed(2)">Transfer</button>
+    </tui-segmented>
+
+    <!-- Date -->
+    <div class="row date-row">
+        <tui-textfield>
+            <label tuiLabel>Date</label>
+            <input tuiInputDate formControlName="date" />
+            <tui-calendar *tuiDropdown />
+        </tui-textfield>
+        @if (!lock.synced) {
+        <button tuiIconButton type="button" appearance="gray" size="s" [iconStart]="'@tui.chevron-left'"
+            aria-label="Previous day" title="Previous day" (click)="shiftDate(-1)"></button>
+        <button tuiIconButton type="button" appearance="gray" size="s" [iconStart]="'@tui.calendar'"
+            aria-label="Today" title="Today" (click)="setToday()"></button>
+        <button tuiIconButton type="button" appearance="gray" size="s" [iconStart]="'@tui.chevron-right'"
+            aria-label="Next day" title="Next day" (click)="shiftDate(1)"></button>
+        }
+    </div>
+
+    <!-- From / To accounts -->
+    @if (isExpense() || isTransfer()) {
+        <app-account-select formControlName="fromAccount" [label]="isTransfer() ? 'From Account' : 'Account'" />
+        <div class="row">
+            <tui-textfield>
+                <input tuiAutoFocus tuiInputNumber formControlName="debitAmount" [min]="0" [quantum]="debitQuantum()"
+                    [tuiNumberFormat]="{ precision: debitPrecision() }"
+                    placeholder="0.00" />
+            </tui-textfield>
+            <span>{{fromAccountValue()?.currency}}</span>
+        </div>
+    }
+    @if (isIncome() || isTransfer()) {
+        <app-account-select formControlName="toAccount" [label]="isTransfer() ? 'To Account' : 'Account'" />
+        @if (isIncome() || !isSameCurrency()) {
+            <div class="row">
+                <tui-textfield>
+                    <input tuiAutoFocus tuiInputNumber formControlName="creditAmount" [min]="0" [quantum]="creditQuantum()"
+                    [tuiNumberFormat]="{ precision: creditPrecision() }"
+                        placeholder="0.00" />
+                </tui-textfield>
+                <span>{{toAccountValue()?.currency}}</span>
+            </div>
+        }
+    }
+    <!-- Category (Expense / Income only) -->
+    @if (!isTransfer()) {
+    <app-category-select [rootId]="categoryRootId()" formControlName="category" />
+    }
+
+    <!-- Optional fields -->
+    @if (!lock.synced) {
+    <tui-textfield>
+        <label tuiLabel>Payee</label>
+        <input tuiInput formControlName="payee" placeholder="Optional" />
+    </tui-textfield>
+    } @else if (chainPayee(); as p) {
+    <div class="chain-ref">
+        <span class="chain-ref-label">Payee</span>
+        @if (p.url) {
+        <a class="chain-ref-value" [href]="p.url" target="_blank" rel="noopener noreferrer" [title]="p.value">{{ p.short }}</a>
+        } @else {
+        <span class="chain-ref-value" [title]="p.value">{{ p.short }}</span>
+        }
+        <button tuiIconButton type="button" appearance="gray" size="xs" [iconStart]="'@tui.copy'"
+            aria-label="Copy payee" (click)="copy(p.value, 'payee')"></button>
+    </div>
+    }
+    @if (chainTx(); as tx) {
+    <div class="chain-ref">
+        <span class="chain-ref-label">Transaction ID</span>
+        @if (tx.url) {
+        <a class="chain-ref-value" [href]="tx.url" target="_blank" rel="noopener noreferrer" [title]="tx.txid">{{ tx.short }}</a>
+        } @else {
+        <span class="chain-ref-value" [title]="tx.txid">{{ tx.short }}</span>
+        }
+        <button tuiIconButton type="button" appearance="gray" size="xs" [iconStart]="'@tui.copy'"
+            aria-label="Copy transaction ID" (click)="copy(tx.txid, 'transaction ID')"></button>
+    </div>
+    }
+
+    <tui-textfield>
+        <label tuiLabel>Description</label>
+        <textarea tuiTextarea formControlName="description" placeholder="Optional"></textarea>
+    </tui-textfield>
+
+    <div class="actions">
+        <button tuiButton size="s" type="button" appearance="outline" (click)="cancel()">Cancel</button>
+        <button tuiButton size="s" type="submit">Save</button>
+    </div>
+</form>

@@ -1,0 +1,84 @@
+.form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.type-selector {
+    width: 100%;
+
+    button {
+        flex: 1;
+    }
+}
+
+.currency-row {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.currency-field {
+    flex: 1;
+}
+
+.row {
+    display: flex;
+    gap: 1rem;
+
+    tui-textfield {
+        flex: 1;
+
+        &.currency-field {
+            flex: 0 0 8rem;
+        }
+    }
+    align-items: center;
+}
+
+
+.date-row {
+    gap: 0.25rem;
+}
+
+.actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.owner-badge {
+    margin-left: auto;
+    padding-left: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--tui-text-secondary);
+}
+
+.chain-ref {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font: var(--tui-typography-body-s);
+}
+
+// Payee and txid of a synced row read as one block: cancel the form's gap between them.
+.chain-ref + .chain-ref {
+    margin-top: -1rem;
+}
+
+.chain-ref-label {
+    color: var(--tui-text-secondary);
+}
+
+.chain-ref-value {
+    font-family: monospace;
+}
+
+button[tuiAppearance][data-appearance='gray'] {
+    color: var(--tui-text-tertiary);
+    scale: 1.0;
+    &[data-state='hover'],
+    &:hover:not(._no-hover):not(:disabled){
+        color: var(--tui-text-primary);
+        background: var(--tui-background-neutral-1-hover);
+    };
+}

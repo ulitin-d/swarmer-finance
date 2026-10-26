@@ -1,0 +1,34 @@
+<tui-textfield tuiChevron [tuiTextfieldCleaner]="cleaner()" [stringify]="stringify"
+    [identityMatcher]="categoryMatcher" [tuiTextfieldSize]="size()" [content]="value() && selectedContent"
+    [(open)]="open">
+    @if (label()) {
+        <label tuiLabel>{{ label() }}</label>
+    }
+    <input tuiSelect placeholder="Uncategorized" [ngModel]="value()" [ngModelOptions]="{ standalone: true }" [disabled]="disabled()" (ngModelChange)="onValueChange($event)"
+        (blur)="onTouched()" />
+    <tui-data-list *tuiDropdown>
+        @for (item of visibleCategories(); track item.id) {
+            <tui-tree [childrenHandler]="treeHandler" [content]="treeNodeContent" [map]="treeMap"
+                [tuiTreeController]="false" [value]="item" />
+        }
+        <button tuiOption type="button" class="add-option" (click)="addCategory()">
+            <tui-icon icon="@tui.plus" />
+            Add category…
+        </button>
+    </tui-data-list>
+</tui-textfield>
+<ng-template #selectedContent let-item>
+    <span class="selected-option">
+        <tui-icon [icon]="'@tui.' + item.icon" [style.color]="item.color" />
+        {{ stringify(item) }}
+    </span>
+</ng-template>
+<ng-template #treeNodeContent let-item>
+    <button new tuiOption type="button" [value]="item" class="tree-option">
+        <tui-icon [icon]="'@tui.' + item.icon" [style.color]="item.color" />
+        {{ item.name }}
+        @if (isForeign(item)) {
+            <span class="owner-badge">{{ item.owner_name }}</span>
+        }
+    </button>
+</ng-template>

@@ -1,0 +1,43 @@
+@for (t of state.viewTransactions(); track t.id) {
+    <div
+        [class]="'row type' + t.type + (state.selectedTransaction()?.id === t.id ? ' selected' : '')"
+        role="button"
+        tabindex="0"
+        (click)="selectTransaction(t)"
+        (keydown.enter)="selectTransaction(t); $event.preventDefault()"
+        (keydown.space)="selectTransaction(t); $event.preventDefault()"
+    >
+        <span class="date">{{ t.date | date:'dd MMM yyyy' }}</span>
+        <span class="info">
+            <span class="meta">
+                {{ t.accountName }}
+                @if (t.category) { · {{ t.category.fullName || t.category.name }} }
+            </span>
+            <span class="description">{{ t.description || t.payee || '—' }}</span>
+        </span>
+        <div class="amounts">
+            <span class="amount">
+                @if (t.type === TransactionType.Income) { + }
+                @if (t.type === TransactionType.Expense) { − }
+                {{ t.amount | money: t.amountCurrency : t.amountScale }}
+            </span>
+            @if (t.balance !== null) {
+                <span class="balance">{{ t.balance | money: t.balanceCurrency : t.balanceScale }}</span>
+            }
+        </div>
+    </div>
+}
+
+@if (state.viewTransactions().length === 0 && !state.loading()) {
+    <p class="empty">No transactions yet.</p>
+}
+
+<div #sentinel class="sentinel"></div>
+
+@if (state.loading()) {
+    <tui-loader class="loader" />
+}
+
+@if (state.hasMore() && !state.loading()) {
+    <button tuiButton appearance="flat" size="s" class="load-more" (click)="state.loadMore()">Load more</button>
+}

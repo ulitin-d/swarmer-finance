@@ -1,0 +1,26 @@
+<tui-textfield class="search" tuiTextfieldSize="s" iconStart="@tui.search">
+  <input tuiInput [formControl]="details"
+    placeholder="Search transactions" aria-label="Search transactions" />
+</tui-textfield>
+<app-date-range-filter />
+@for (chip of accountChips(); track chip.key) {
+  <span tuiChip size="s" [style.background-color]="chip.label | tuiAutoColor">
+    {{ chip.label }}
+    <button tuiButtonX appearance="icon" size="xs" [attr.aria-label]="'Remove ' + chip.label"
+      (click)="transactions.toggleAccounts(chip.ids)">Remove</button>
+  </span>
+}
+@if (typeChip(); as label) {
+  <span tuiChip size="s" data-kind="type">
+    {{ label }}
+    <button tuiButtonX appearance="icon" size="xs" [attr.aria-label]="'Remove ' + label"
+      (click)="transactions.clearType()">Remove</button>
+  </span>
+}
+@for (chip of categoryChips(); track chip.id) {
+  <span tuiChip size="s" data-kind="category" [style.border-color]="chip.color">
+    {{ chip.label }}
+    <button tuiButtonX appearance="icon" size="xs" [attr.aria-label]="'Remove ' + chip.label"
+      (click)="transactions.toggleCategory(chip.id)">Remove</button>
+  </span>
+}

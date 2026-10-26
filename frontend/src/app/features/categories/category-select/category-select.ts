@@ -1,0 +1,104 @@
+import { ChangeDetectionStrategy, Component, computed, forwardRef, inject, input, signal } from '@angular/core';
+import { ControlValueAccessor, FormsModule, NG_VALUE_ACCESSOR } from '@angular/forms';
+import { TuiDataList, TuiIcon, TuiTextfield } from '@taiga-ui/core';
+import { TuiChevron, TuiSelect, TuiTree } from '@taiga-ui/kit';
+import { type TuiStringHandler } from '@taiga-ui/cdk';
+import { CategoriesState } from '../../../core/categories.state';
+import { AuthService } from '../../../core/auth.service';
+import { CategoryDialogService } from '../category-dialog.service';
+import { SystemCategory, type Category } from '../../../models/category';
+
+/**
+ * Picks a category from the tree under one root (1 = Income, 2 = Expenses).
+ *
+ * Shared between the transaction form and statement import, which need
+ * identical behaviour: both can show categories owned by someone else, since
+ * a shared account's transactions carry their author's categories.
+ */
+@Component({
+  selector: 'app-category-select',
+  imports: [FormsModule, TuiTextfield, TuiSelect, TuiDataList, TuiTree, TuiIcon, TuiChevron],
+  templateUrl: './category-select.html',
+  styleUrl: './category-select.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  providers: [
+    {
+      provide: NG_VALUE_ACCESSOR,
+      useExisting: forwardRef(() => CategorySelect),
+      multi: true,
+    },
+  ],
+})
+export class CategorySelect implements ControlValueAccessor {
+  /** 1 for Income, 2 for Expenses. */
+  readonly rootId = input.required<number>();
+  readonly label = input<string>('Category');
+  readonly cleaner = input<boolean>(true);
+  readonly size = input<"l" | "m" | "s">('m');
+
+  private readonly categoriesState = inject(CategoriesState);
+  private readonly auth = inject(AuthService);
+  private readonly categoryDialogs = inject(CategoryDialogService);
+
+  // Signals, so a value written by the form (e.g. a programmatic setValue)
+  // re-renders this OnPush view without waiting for an event inside it.
+  protected readonly value = signal<Category | null>(null);
+  protected readonly disabled = signal(false);
+  protected readonly open = signal(false);
+  private onChange: (value: Category | null) => void = () => {};
+  protected onTouched: () => void = () => {};
+
+  readonly visibleCategories = computed(
+    () => this.categoriesState.categories().find(c => c.id === this.rootId())?.children?.filter(c => c.id !== SystemCategory.NetworkFees) || []
+  );
+
+  /**
+   * A category owned by someone else — shown because a shared account's
+   * transactions carry their author's categories. Picking one is allowed:
+   * the server copies the path into the owner's own tree.
+   */
+  readonly isForeign = (c: Category): boolean =>
+    c.user_id !== null && c.user_id !== this.auth.user()?.id;
+
+  readonly stringify: TuiStringHandler<Category | null> = c =>
+    c?.fullName ?? c?.name ?? 'Uncategorized';
+
+  // The tree holds one node per path, so a transaction may reference a row
+  // that lost the dedupe to an equivalent one. Identity is the path, not the
+  // id, or such a category would not highlight in the dropdown.
+  readonly categoryMatcher = (a: Category | null, b: Category | null): boolean =>
+    a?.root_id === b?.root_id && a?.fullName === b?.fullName;
+
+  readonly treeMap = new Map<Category, boolean>();
+  readonly treeHandler = (item: Category): readonly Category[] => item.children ?? [];
+
+  writeValue(value: Category | null): void {
+    this.value.set(value);
+  }
+
+  registerOnChange(fn: (value: Category | null) => void): void {
+    this.onChange = fn;
+  }
+
+  registerOnTouched(fn: () => void): void {
+    this.onTouched = fn;
+  }
+
+  setDisabledState(disabled: boolean): void {
+    this.disabled.set(disabled);
+  }
+
+  /** Creates a category in this select's branch and selects it. */
+  async addCategory(): Promise<void> {
+    this.open.set(false);
+    const category = await this.categoryDialogs.openCreate(null, this.rootId());
+    if (category) {
+      this.onValueChange(category);
+    }
+  }
+
+  protected onValueChange(value: Category | null): void {
+    this.value.set(value);
+    this.onChange(value);
+  }
+}

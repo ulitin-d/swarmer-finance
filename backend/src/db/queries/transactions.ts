@@ -1,24 +1,40 @@
-import { query, queryOne, execute } from '../index';
-import { Transaction } from '../../types';
+import { query, queryOne, execute, Tx } from '../index';
+import { Transaction, TransactionDTO } from '../../types';
+import { CATEGORY_PATHS_CTE } from './categories';
 
+/** What the client may ask for. `accounts` is an optional narrowing filter. */
 export interface TransactionFilters {
   from?: string;
   to?: string;
-  category?: number;
+  categories?: number[];
+  accounts?: number[];
+  details?: string;
   type?: 'income' | 'expense' | 'transfer';
-  page?: number;
+  offset?: number;
   limit?: number;
 }
 
+/**
+ * What the query actually runs with. `accounts` is REQUIRED here and carries
+ * the accounts the caller may reach — it is the access gate, not a filter.
+ * The service builds it by intersecting any client-supplied `accounts` with
+ * the caller's accessible set, so it can only ever narrow.
+ */
+export type TransactionQueryFilters = Omit<TransactionFilters, 'accounts'> & {
+  accounts: number[];
+};
+
 export interface CreateTransactionData {
   categoryId?: number;
-  debitAccountId?: number;
-  creditAccountId?: number;
+  debitAccountId?: number | null;
+  creditAccountId?: number | null;
   debit: number;
   credit: number;
-  currency?: string;
   date: string;
   description?: string;
+  payee?: string | null;
+  /** Set only by the import flow; NULL for hand-entered transactions. */
+  importHash?: string | null;
 }
 
 export interface UpdateTransactionData {
@@ -27,17 +43,117 @@ export interface UpdateTransactionData {
   creditAccountId?: number;
   debit?: number;
   credit?: number;
-  currency?: string;
   date?: string;
   description?: string;
+  payee?: string;
 }
 
-export const getTransactionsByUserId = async (
-  userId: number,
-  filters: TransactionFilters
-): Promise<{ transactions: Transaction[]; total: number }> => {
-  const conditions: string[] = ['t.user_id = $1'];
-  const params: unknown[] = [userId];
+interface TransactionRow extends Transaction {
+  category_name: string | null;
+  category_color: string | null;
+  category_user_id: number | null;
+  category_parent_id: number | null;
+  category_icon: string | null;
+  category_created_at: Date | null;
+  category_owner_name: string | null;
+  category_full_name: string | null;
+  category_root_id: number | null;
+  debit_account_name: string | null;
+  debit_account_currency: string | null;
+  debit_account_scale: number | null;
+  credit_account_name: string | null;
+  credit_account_currency: string | null;
+  credit_account_scale: number | null;
+  txid: string | null;
+}
+
+function toDTO(row: TransactionRow): TransactionDTO {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    category: row.category_id != null
+      ? {
+          id: row.category_id,
+          user_id: row.category_user_id,
+          name: row.category_name!,
+          parent_id: row.category_parent_id,
+          color: row.category_color!,
+          icon: row.category_icon!,
+          created_at: row.category_created_at!,
+          owner_name: row.category_owner_name,
+          fullName: row.category_full_name!,
+          root_id: row.category_root_id!,
+        }
+      : null,
+    debit_account: row.debit_account_id != null
+      ? { id: row.debit_account_id, name: row.debit_account_name!, currency: row.debit_account_currency!, scale: row.debit_account_scale! }
+      : null,
+    credit_account: row.credit_account_id != null
+      ? { id: row.credit_account_id, name: row.credit_account_name!, currency: row.credit_account_currency!, scale: row.credit_account_scale! }
+      : null,
+    debit: row.debit,
+    credit: row.credit,
+    date: row.date,
+    description: row.description,
+    payee: row.payee,
+    txid: row.txid,
+    created_at: row.created_at,
+  };
+}
+
+const WITH_DETAILS_SQL = `
+  ${CATEGORY_PATHS_CTE}
+  SELECT t.*,
+         c.name as category_name, c.color as category_color,
+         c.user_id as category_user_id, c.parent_id as category_parent_id,
+         c.icon as category_icon, c.created_at as category_created_at,
+         cu.name as category_owner_name,
+         cp.full_name as category_full_name, cp.root_id as category_root_id,
+         da.name as debit_account_name, da.currency as debit_account_currency, da.scale as debit_account_scale,
+         ca.name as credit_account_name, ca.currency as credit_account_currency, ca.scale as credit_account_scale,
+         -- The on-chain txid, only for a row a sync of one of its accounts
+         -- wrote: a statement-import hash is never in chain_seen_txids.
+         (SELECT s.txid FROM chain_seen_txids s
+          WHERE s.account_id IN (t.debit_account_id, t.credit_account_id)
+            AND s.txid = split_part(t.import_hash, ':', 1)
+          LIMIT 1) as txid
+  FROM transactions t
+  LEFT JOIN categories c ON t.category_id = c.id
+  LEFT JOIN users cu ON cu.id = c.user_id
+  LEFT JOIN category_paths cp ON cp.id = c.id
+  LEFT JOIN accounts da ON t.debit_account_id = da.id
+  LEFT JOIN accounts ca ON t.credit_account_id = ca.id
+`;
+
+export const getTransactionDTOById = async (id: number): Promise<TransactionDTO | null> => {
+  const row = await queryOne<TransactionRow>(
+    `${WITH_DETAILS_SQL} WHERE t.id = $1`,
+    [id]
+  );
+  return row ? toDTO(row) : null;
+};
+
+export const getTransactions = async (
+  filters: TransactionQueryFilters
+): Promise<TransactionDTO[]> => {
+  // An empty account list means "nothing is reachable", so nothing matches.
+  // This guard is load-bearing: without it the predicate below would be
+  // `= ANY('{}')`, which matches no rows only by accident of SQL semantics,
+  // and any future refactor that made the predicate conditional would turn
+  // an empty list into "no filter at all" — i.e. every transaction in the
+  // database. Keep the guard even if the predicate looks sufficient.
+  if (filters.accounts.length === 0) return [];
+
+  // A transaction is visible when the user can reach at least one of its
+  // accounts. t.user_id records who entered it and is NOT an access filter.
+  //
+  // This predicate is UNCONDITIONAL — it is the access gate. `filters.accounts`
+  // has already been intersected with the caller's accessible set by the
+  // service, so it can only narrow, never widen. Do not make it conditional.
+  const conditions: string[] = [
+    '(t.debit_account_id = ANY($1::int[]) OR t.credit_account_id = ANY($1::int[]))',
+  ];
+  const params: unknown[] = [filters.accounts];
   let paramIndex = 2;
 
   if (filters.from) {
@@ -50,9 +166,15 @@ export const getTransactionsByUserId = async (
     params.push(filters.to);
   }
 
-  if (filters.category) {
-    conditions.push(`t.category_id = $${paramIndex++}`);
-    params.push(filters.category);
+  if (filters.categories?.length) {
+    conditions.push(`t.category_id = ANY($${paramIndex++}::int[])`);
+    params.push(filters.categories);
+  }
+
+  if (filters.details) {
+    const idx = paramIndex++;
+    conditions.push(`(t.description ILIKE $${idx} OR t.payee ILIKE $${idx})`);
+    params.push(`%${filters.details}%`);
   }
 
   if (filters.type === 'expense') {
@@ -64,54 +186,32 @@ export const getTransactionsByUserId = async (
   }
 
   const whereClause = conditions.join(' AND ');
-  const page = filters.page || 1;
-  const limit = filters.limit || 20;
-  const offset = (page - 1) * limit;
+  const limit = filters.limit ?? 20;
+  const offset = filters.offset ?? 0;
 
-  const countResult = await query<{ total: string }>(
-    `SELECT COUNT(*) as total FROM transactions t WHERE ${whereClause}`,
-    params
-  );
-
-  const transactions = await query<Transaction>(
-    `SELECT t.*,
-            c.name as category_name, c.color as category_color,
-            da.name as debit_account_name, da.currency as debit_account_currency,
-            ca.name as credit_account_name, ca.currency as credit_account_currency
-     FROM transactions t
-     LEFT JOIN categories c ON t.category_id = c.id
-     LEFT JOIN accounts da ON t.debit_account_id = da.id
-     LEFT JOIN accounts ca ON t.credit_account_id = ca.id
+  const rows = await query<TransactionRow>(
+    `${WITH_DETAILS_SQL}
      WHERE ${whereClause}
-     ORDER BY t.date DESC, t.created_at DESC
+     ORDER BY t.date DESC, t.created_at DESC, t.id DESC
      LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
     [...params, limit, offset]
   );
 
-  return {
-    transactions,
-    total: parseInt(countResult[0]?.total || '0', 10),
-  };
+  return rows.map(toDTO);
 };
 
-export const getTransactionById = async (
-  id: number,
-  userId: number
-): Promise<Transaction | null> => {
-  return queryOne<Transaction>(
-    'SELECT * FROM transactions WHERE id = $1 AND user_id = $2',
-    [id, userId]
-  );
+export const getTransactionById = async (id: number): Promise<Transaction | null> => {
+  return queryOne<Transaction>('SELECT * FROM transactions WHERE id = $1', [id]);
 };
 
 export const createTransaction = async (
   userId: number,
   data: CreateTransactionData
-): Promise<Transaction> => {
-  const result = await query<Transaction>(
+): Promise<TransactionDTO> => {
+  const result = await query<{ id: number }>(
     `INSERT INTO transactions
-       (user_id, category_id, debit_account_id, credit_account_id, debit, credit, currency, date, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+       (user_id, category_id, debit_account_id, credit_account_id, debit, credit, date, description, payee, import_hash)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
     [
       userId,
       data.categoryId ?? null,
@@ -119,53 +219,508 @@ export const createTransaction = async (
       data.creditAccountId ?? null,
       data.debit,
       data.credit,
-      data.currency ?? null,
       data.date,
       data.description || '',
+      data.payee ?? null,
+      data.importHash ?? null,
     ]
   );
-  return result[0];
+  return (await getTransactionDTOById(result[0].id))!;
 };
 
 export const updateTransaction = async (
   id: number,
-  userId: number,
   data: UpdateTransactionData
-): Promise<Transaction | null> => {
-  const result = await query<Transaction>(
+): Promise<TransactionDTO | null> => {
+  const count = await execute(
     `UPDATE transactions
-     SET category_id = COALESCE($1, category_id),
-         debit_account_id = COALESCE($2, debit_account_id),
-         credit_account_id = COALESCE($3, credit_account_id),
-         debit = COALESCE($4, debit),
-         credit = COALESCE($5, credit),
-         currency = COALESCE($6, currency),
-         date = COALESCE($7, date),
-         description = COALESCE($8, description)
-     WHERE id = $9 AND user_id = $10 RETURNING *`,
+     SET category_id = $1,
+         debit_account_id = $2,
+         credit_account_id = $3,
+         debit = $4,
+         credit = $5,
+         date = $6,
+         description = $7,
+         payee = $8
+     WHERE id = $9`,
     [
       data.categoryId ?? null,
       data.debitAccountId ?? null,
       data.creditAccountId ?? null,
       data.debit ?? null,
       data.credit ?? null,
-      data.currency ?? null,
       data.date ?? null,
       data.description ?? null,
+      data.payee ?? null,
       id,
-      userId,
     ]
   );
-  return result[0] || null;
+  if (count === 0) return null;
+  return getTransactionDTOById(id);
 };
 
-export const deleteTransaction = async (
-  id: number,
-  userId: number
-): Promise<boolean> => {
-  const count = await execute(
-    'DELETE FROM transactions WHERE id = $1 AND user_id = $2',
-    [id, userId]
-  );
+export const deleteTransaction = async (id: number): Promise<boolean> => {
+  const count = await execute('DELETE FROM transactions WHERE id = $1', [id]);
   return count > 0;
+};
+
+export interface AccountBalanceAt {
+  id: number;
+  balance: number;
+}
+
+// Balance strictly before the (date, createdAt, id) cursor — matching the
+// (date DESC, created_at DESC, id DESC) order transactions are listed in,
+// so a cursor anchored to one page's oldest transaction excludes exactly
+// the transactions already summed on earlier pages, even when several
+// transactions share the same date and created_at.
+//
+// The cursor is read back from the row by id rather than passed in: pg
+// returns created_at as a JS Date, which drops its microseconds, and a
+// rounded-down created_at would exclude same-date rows that sort before it.
+export const getBalancesAt = async (
+  accountIds: number[],
+  id: number
+): Promise<AccountBalanceAt[]> => {
+  if (accountIds.length === 0) return [];
+  const rows = await query<{ id: number; balance: string }>(
+    `SELECT a.id,
+            (a.start_balance
+             + COALESCE(SUM(t.credit) FILTER (WHERE t.credit_account_id = a.id), 0)
+             - COALESCE(SUM(t.debit)  FILTER (WHERE t.debit_account_id  = a.id), 0)
+            )::numeric AS balance
+     FROM accounts a
+     LEFT JOIN transactions t
+            ON (t.credit_account_id = a.id OR t.debit_account_id = a.id)
+           AND (t.date, t.created_at, t.id) <
+               (SELECT c.date, c.created_at, c.id FROM transactions c WHERE c.id = $1)
+     WHERE a.id = ANY($2::int[])
+     GROUP BY a.id, a.start_balance`,
+    [id, accountIds]
+  );
+  return rows.map(r => ({ id: r.id, balance: Number(r.balance) }));
+};
+
+export interface AccountBalance {
+  debit_account_id: number | null;
+  credit_account_id: number | null;
+  debit: number;
+  credit: number;
+  last_date: string;
+}
+
+export const getAccountBalances = async (
+  accountIds: number[]
+): Promise<AccountBalance[]> => {
+  // An empty list means no accounts, so no balances. The previous
+  // `array_length(...) IS NULL` branch meant "all of this user's
+  // transactions"; with user_id gone it would mean every transaction in the
+  // database, so it is removed and callers always pass an explicit list.
+  if (accountIds.length === 0) return [];
+  const rows = await query<Omit<AccountBalance, 'debit' | 'credit'> & { debit: string; credit: string }>(
+    `SELECT
+       debit_account_id,
+       credit_account_id,
+       SUM(debit) AS debit,
+       SUM(credit) AS credit,
+       MAX(date) AS last_date
+     FROM transactions
+     WHERE debit_account_id = ANY($1::int[])
+        OR credit_account_id = ANY($1::int[])
+     GROUP BY debit_account_id, credit_account_id
+     ORDER BY last_date DESC`,
+    [accountIds]
+  );
+  return rows.map(row => ({ ...row, debit: Number(row.debit), credit: Number(row.credit) }));
+};
+
+export interface CategorySummaryRow {
+  type: 'income' | 'expense';
+  category_id: number;
+  name: string;
+  color: string;
+  icon: string;
+  currency: string;
+  scale: number;
+  amount: number;
+}
+
+/**
+ * Income and expense sums per top-level category and account currency.
+ * Transfers are left out. Top-level categories are grouped by
+ * root and name, as the category tree merges co-owners' rows at one path;
+ * `category_id` is the lowest id behind that name.
+ */
+export const getCategorySummary = async (
+  filters: Pick<TransactionQueryFilters, 'accounts' | 'from' | 'to'>
+): Promise<CategorySummaryRow[]> => {
+  // Same access gate as getTransactions: an empty list matches nothing.
+  if (filters.accounts.length === 0) return [];
+
+  const conditions = [
+    '(t.debit_account_id IS NULL) <> (t.credit_account_id IS NULL)',
+    'COALESCE(t.debit_account_id, t.credit_account_id) = ANY($1::int[])',
+  ];
+  const params: unknown[] = [filters.accounts];
+  if (filters.from) {
+    params.push(filters.from);
+    conditions.push(`t.date >= $${params.length}`);
+  }
+  if (filters.to) {
+    params.push(filters.to);
+    conditions.push(`t.date <= $${params.length}`);
+  }
+
+  const rows = await query<Omit<CategorySummaryRow, 'amount'> & { amount: string }>(
+    `WITH RECURSIVE tops AS (
+       SELECT c.id, c.id AS top_id, c.parent_id AS root_id
+       FROM categories c JOIN categories r ON r.id = c.parent_id
+       WHERE r.parent_id IS NULL
+       UNION ALL
+       SELECT c.id, t.top_id, t.root_id FROM categories c JOIN tops t ON c.parent_id = t.id
+     ),
+     grouped AS (
+       SELECT CASE WHEN t.debit_account_id IS NOT NULL THEN 'expense' ELSE 'income' END AS type,
+              top.root_id, tc.name, MIN(tc.id) AS category_id,
+              a.currency, a.scale,
+              SUM(CASE WHEN t.debit_account_id IS NOT NULL THEN t.debit ELSE t.credit END) AS amount
+       FROM transactions t
+       JOIN accounts a ON a.id = COALESCE(t.debit_account_id, t.credit_account_id)
+       JOIN tops top ON top.id = t.category_id
+       JOIN categories tc ON tc.id = top.top_id
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY 1, top.root_id, tc.name, a.currency, a.scale
+     )
+     SELECT g.type, g.category_id, g.name, c.color, c.icon, g.currency, g.scale, g.amount
+     FROM grouped g JOIN categories c ON c.id = g.category_id`,
+    params
+  );
+  return rows.map(r => ({ ...r, amount: Number(r.amount) }));
+};
+
+/**
+ * Which of `hashes` already exist on this account.
+ *
+ * Scoped by account id alone — access is settled in the service layer, and a
+ * hash is only unique within an account anyway.
+ */
+export const findExistingImportHashes = async (
+  accountId: number,
+  hashes: string[]
+): Promise<string[]> => {
+  if (hashes.length === 0) return [];
+  const rows = await query<{ import_hash: string }>(
+    `SELECT DISTINCT import_hash
+     FROM transactions
+     WHERE import_hash = ANY($1::text[])
+       AND (debit_account_id = $2 OR credit_account_id = $2)`,
+    [hashes, accountId]
+  );
+  return rows.map(r => r.import_hash);
+};
+
+/**
+ * Transactions on this account falling on any of `dates`, for the heuristic
+ * duplicate check. Returns amounts in cents; the service matches them.
+ */
+export const findByDates = async (
+  accountId: number,
+  dates: string[]
+): Promise<{
+  id: number;
+  date: string;
+  debit: string;
+  credit: string;
+  debit_account_id: number | null;
+  credit_account_id: number | null;
+}[]> => {
+  if (dates.length === 0) return [];
+  return query<{
+    id: number;
+    date: string;
+    debit: string;
+    credit: string;
+    debit_account_id: number | null;
+    credit_account_id: number | null;
+  }>(
+    `SELECT id, date, debit, credit, debit_account_id, credit_account_id
+     FROM transactions
+     WHERE date = ANY($1::date[])
+       AND (debit_account_id = $2 OR credit_account_id = $2)`,
+    [dates, accountId]
+  );
+};
+
+/**
+ * Categorised expenses and incomes on these accounts, the history import
+ * learns category suggestions from. Transfers and the Uncategorized
+ * categories (3, 4) are left out: neither says anything about a merchant.
+ */
+export const findCategorizedHistory = async (
+  accountIds: number[]
+): Promise<{
+  categoryId: number;
+  side: 'expense' | 'income';
+  payee: string | null;
+  description: string;
+}[]> => {
+  if (accountIds.length === 0) return [];
+  return query<{
+    categoryId: number;
+    side: 'expense' | 'income';
+    payee: string | null;
+    description: string;
+  }>(
+    `SELECT category_id AS "categoryId",
+            CASE WHEN debit_account_id IS NOT NULL THEN 'expense' ELSE 'income' END AS side,
+            payee,
+            COALESCE(description, '') AS description
+     FROM transactions
+     WHERE category_id IS NOT NULL
+       AND category_id NOT IN (3, 4)
+       AND ((debit_account_id = ANY($1::int[]) AND credit_account_id IS NULL)
+         OR (credit_account_id = ANY($1::int[]) AND debit_account_id IS NULL))`,
+    [accountIds]
+  );
+};
+
+export interface ImportedTransactionData extends CreateTransactionData {
+  importHash: string;
+}
+
+/**
+ * Bulk insert in one statement. ON CONFLICT DO NOTHING against the partial
+ * unique indexes makes a double-submit a no-op rather than a duplicate, so
+ * the count returned is what actually landed.
+ *
+ * Includes `payee` (deviating from the original brief draft, which omitted
+ * it): the single-row createTransaction already stores payee, LHV supplies a
+ * real counterparty name, and dropping it only in the bulk path would make
+ * imported transactions strictly worse than hand-entered ones.
+ */
+export const createImportedTransactions = async (
+  userId: number,
+  rows: ImportedTransactionData[]
+): Promise<number> => {
+  if (rows.length === 0) return 0;
+
+  const values: unknown[] = [];
+  const tuples = rows.map((r, i) => {
+    const b = i * 10;
+    values.push(
+      userId,
+      r.categoryId ?? null,
+      r.debitAccountId ?? null,
+      r.creditAccountId ?? null,
+      r.debit,
+      r.credit,
+      r.date,
+      r.description || '',
+      r.payee ?? null,
+      r.importHash
+    );
+    return `($${b+1}, $${b+2}, $${b+3}, $${b+4}, $${b+5}, $${b+6}, $${b+7}, $${b+8}, $${b+9}, $${b+10})`;
+  });
+
+  // Two partial indexes cover this table, one per account column, so a single
+  // ON CONFLICT target cannot name both; DO NOTHING without a target lets
+  // either index absorb the conflict.
+  const inserted = await query<{ id: number }>(
+    `INSERT INTO transactions
+       (user_id, category_id, debit_account_id, credit_account_id, debit, credit, date, description, payee, import_hash)
+     VALUES ${tuples.join(', ')}
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
+    values
+  );
+  return inserted.length;
+};
+
+/** On-chain transaction ids this account's own sync has already processed. */
+export const findSeenTxids = async (accountId: number): Promise<string[]> => {
+  const rows = await query<{ txid: string }>(
+    'SELECT txid FROM chain_seen_txids WHERE account_id = $1',
+    [accountId]
+  );
+  return rows.map(r => r.txid);
+};
+
+export const markTxidsSeen = async (db: Tx, accountId: number, txids: string[]): Promise<void> => {
+  if (txids.length === 0) return;
+  await db.query(
+    `INSERT INTO chain_seen_txids (account_id, txid)
+     SELECT $1, unnest($2::text[])
+     ON CONFLICT DO NOTHING`,
+    [accountId, txids]
+  );
+};
+
+/** Forgets what the account's sync processed, so the next sync reads the whole history. */
+export const clearSeenTxids = async (db: Tx, accountId: number): Promise<void> => {
+  await db.query('DELETE FROM chain_seen_txids WHERE account_id = $1', [accountId]);
+};
+
+/** The row carrying `hash` on the given side of this account, locked for the sync. */
+export const findByImportHashForUpdate = async (
+  db: Tx,
+  accountId: number,
+  side: 'debit' | 'credit',
+  hash: string
+): Promise<Transaction | null> => {
+  const column = side === 'debit' ? 'debit_account_id' : 'credit_account_id';
+  return db.queryOne<Transaction>(
+    `SELECT * FROM transactions WHERE ${column} = $1 AND import_hash = $2 FOR UPDATE`,
+    [accountId, hash]
+  );
+};
+
+export interface SyncedShape {
+  debitAccountId: number | null;
+  creditAccountId: number | null;
+  debit: number;
+  credit: number;
+  categoryId: number | null;
+}
+
+/** A transaction of one account as the first sync's reconciliation reads it; amounts as numbers. */
+export interface AccountTxRow {
+  id: number;
+  debit_account_id: number | null;
+  credit_account_id: number | null;
+  debit: number;
+  credit: number;
+  date: string;
+  description: string;
+  payee: string | null;
+  import_hash: string | null;
+}
+
+/** Re-points an existing synced row; date, payee and description stay. */
+export const setSyncedShape = async (db: Tx, id: number, shape: SyncedShape): Promise<void> => {
+  await db.query(
+    `UPDATE transactions
+     SET debit_account_id = $1, credit_account_id = $2, debit = $3, credit = $4, category_id = $5
+     WHERE id = $6`,
+    [shape.debitAccountId, shape.creditAccountId, shape.debit, shape.credit, shape.categoryId, id]
+  );
+};
+
+/**
+ * One synced row. ON CONFLICT DO NOTHING against the import_hash indexes
+ * makes a concurrent double sync harmless; returns whether it landed.
+ */
+export const insertSynced = async (
+  db: Tx,
+  userId: number,
+  row: ImportedTransactionData
+): Promise<boolean> => {
+  const inserted = await db.query<{ id: number }>(
+    `INSERT INTO transactions
+       (user_id, category_id, debit_account_id, credit_account_id, debit, credit, date, description, payee, import_hash)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
+    [
+      userId,
+      row.categoryId ?? null,
+      row.debitAccountId ?? null,
+      row.creditAccountId ?? null,
+      row.debit,
+      row.credit,
+      row.date,
+      row.description || '',
+      row.payee ?? null,
+      row.importHash,
+    ]
+  );
+  return inserted.length > 0;
+};
+
+/** Every transaction of the account, locked for the first sync's reconciliation. */
+export const findAccountRowsForUpdate = async (db: Tx, accountId: number): Promise<AccountTxRow[]> => {
+  const rows = await db.query<AccountTxRow>(
+    `SELECT id, debit_account_id, credit_account_id, debit, credit, date, description, payee, import_hash
+     FROM transactions
+     WHERE debit_account_id = $1 OR credit_account_id = $1
+     ORDER BY id
+     FOR UPDATE`,
+    [accountId]
+  );
+  return rows.map(r => ({ ...r, debit: Number(r.debit), credit: Number(r.credit) }));
+};
+
+/** Turns a hand-made row into the synced row it stands in for; accounts and category stay. */
+export const adoptSyncedRow = async (
+  db: Tx,
+  id: number,
+  row: { importHash: string; date: string; debit: number; credit: number; payee: string | null }
+): Promise<void> => {
+  await db.query(
+    `UPDATE transactions SET import_hash = $1, date = $2, debit = $3, credit = $4, payee = $5 WHERE id = $6`,
+    [row.importHash, row.date, row.debit, row.credit, row.payee, id]
+  );
+};
+
+export const deleteTransactionTx = async (db: Tx, id: number): Promise<void> => {
+  await db.query('DELETE FROM transactions WHERE id = $1', [id]);
+};
+
+/**
+ * Drops one side of a transfer, leaving the other account an uncategorized
+ * income or expense of its own amount — as purgeAccountTransactions does.
+ */
+export const detachSide = async (db: Tx, id: number, side: 'debit' | 'credit', categoryId: number): Promise<void> => {
+  await db.query(
+    side === 'debit'
+      ? 'UPDATE transactions SET debit_account_id = NULL, debit = credit, category_id = $2 WHERE id = $1'
+      : 'UPDATE transactions SET credit_account_id = NULL, credit = debit, category_id = $2 WHERE id = $1',
+    [id, categoryId]
+  );
+};
+
+/**
+ * The accounts on the far side of this account's transfers, locking those
+ * rows so none is re-pointed between the access check and the purge.
+ */
+export const findTransferPeersForUpdate = async (db: Tx, accountId: number): Promise<number[]> => {
+  const rows = await db.query<{ peer: number }>(
+    `SELECT CASE WHEN debit_account_id = $1 THEN credit_account_id ELSE debit_account_id END AS peer
+     FROM transactions
+     WHERE (debit_account_id = $1 OR credit_account_id = $1)
+       AND debit_account_id IS NOT NULL AND credit_account_id IS NOT NULL
+     FOR UPDATE`,
+    [accountId]
+  );
+  return [...new Set(rows.map(r => r.peer))];
+};
+
+/**
+ * Removes every transaction of the account. A transfer is not removed but
+ * left to its other account as uncategorized income or expense of that
+ * account's own amount — the row a sync of that side alone would produce.
+ */
+export const purgeAccountTransactions = async (
+  db: Tx,
+  accountId: number,
+  uncategorizedIncomeId: number,
+  uncategorizedExpenseId: number
+): Promise<{ deleted: number; detached: number }> => {
+  const out = await db.query(
+    `UPDATE transactions SET debit_account_id = NULL, debit = credit, category_id = $2
+     WHERE debit_account_id = $1 AND credit_account_id IS NOT NULL AND credit_account_id <> $1
+     RETURNING id`,
+    [accountId, uncategorizedIncomeId]
+  );
+  const into = await db.query(
+    `UPDATE transactions SET credit_account_id = NULL, credit = debit, category_id = $2
+     WHERE credit_account_id = $1 AND debit_account_id IS NOT NULL AND debit_account_id <> $1
+     RETURNING id`,
+    [accountId, uncategorizedExpenseId]
+  );
+  const deleted = await db.query(
+    'DELETE FROM transactions WHERE debit_account_id = $1 OR credit_account_id = $1 RETURNING id',
+    [accountId]
+  );
+  await db.query('DELETE FROM chain_seen_txids WHERE account_id = $1', [accountId]);
+  return { deleted: deleted.length, detached: out.length + into.length };
 };

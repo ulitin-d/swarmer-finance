@@ -1,0 +1,686 @@
+import request from 'supertest';
+import jwt from 'jsonwebtoken';
+import { createTestApp } from './testApp';
+import { pool } from '../db';
+import * as accountQueries from '../db/queries/accounts';
+
+const app = createTestApp();
+
+describe('Accounts API — balance field', () => {
+  let token: string;
+  let testUserId: number;
+  let incomeCategoryId: number;
+  let expenseCategoryId: number;
+
+  // Every GET /api/accounts call triggers currency conversion,
+  // which would otherwise hit the real Frankfurter API. Mock fetch for the
+  // whole suite so no test here makes a real network call; individual tests
+  // below override the resolved value where the actual rate matters.
+  const originalFetch = global.fetch;
+  beforeAll(() => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ date: new Date().toISOString().slice(0, 10), rates: {} }),
+    }) as unknown as typeof fetch;
+  });
+  afterAll(() => {
+    global.fetch = originalFetch;
+  });
+
+  beforeAll(async () => {
+    const email = `acc${Date.now()}@example.com`;
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email, password: 'password123' });
+    token = res.body.data.accessToken;
+
+    const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    testUserId = userResult.rows[0].id;
+
+    const incResult = await pool.query(`
+      SELECT c.id FROM categories c
+      JOIN categories p ON c.parent_id = p.id
+      WHERE c.user_id = $1 AND p.id = 1 LIMIT 1
+    `, [testUserId]);
+    incomeCategoryId = incResult.rows[0].id;
+
+    const expResult = await pool.query(`
+      SELECT c.id FROM categories c
+      JOIN categories p ON c.parent_id = p.id
+      WHERE c.user_id = $1 AND p.id = 2 LIMIT 1
+    `, [testUserId]);
+    expenseCategoryId = expResult.rows[0].id;
+  });
+
+  afterAll(async () => {
+    await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+    await pool.query('DELETE FROM accounts WHERE user_id = $1', [testUserId]);
+    await pool.query('DELETE FROM categories WHERE user_id = $1', [testUserId]);
+    await pool.query('DELETE FROM users WHERE id = $1', [testUserId]);
+  });
+
+  describe('GET /api/accounts', () => {
+    let accountId: number;
+
+    beforeEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+      await pool.query('DELETE FROM accounts WHERE user_id = $1', [testUserId]);
+
+      const result = await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance, scale)
+         VALUES ($1, 'Wallet', 'USD', 10000, 2) RETURNING id`,
+        [testUserId]
+      );
+      accountId = result.rows[0].id;
+    });
+
+    it('returns balance equal to start_balance when no transactions exist', async () => {
+      const res = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      const account = res.body.data[0];
+      expect(account.balance).toBe(100);
+    });
+
+    it('increases balance when account receives income', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 5000, 5000, '2026-01-10')`,
+        [testUserId, incomeCategoryId, accountId]
+      );
+
+      const res = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].balance).toBe(150); // 100 + 50
+    });
+
+    it('decreases balance when account pays an expense', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 3000, 3000, '2026-01-15')`,
+        [testUserId, expenseCategoryId, accountId]
+      );
+
+      const res = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].balance).toBe(70); // 100 - 30
+    });
+
+    it('updates both account balances correctly for a transfer', async () => {
+      const result = await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance, scale)
+         VALUES ($1, 'Savings', 'USD', 0, 2) RETURNING id`,
+        [testUserId]
+      );
+      const savingsId = result.rows[0].id;
+
+      await pool.query(
+        `INSERT INTO transactions (user_id, debit_account_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 4000, 4000, '2026-01-20')`,
+        [testUserId, accountId, savingsId]
+      );
+
+      const res = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      const accounts = res.body.data as Array<{ id: number; balance: number }>;
+      const wallet = accounts.find(a => a.id === accountId)!;
+      const savings = accounts.find(a => a.id === savingsId)!;
+      expect(wallet.balance).toBe(60);  // 100 - 40
+      expect(savings.balance).toBe(40); // 0 + 40
+    });
+
+    it('returns last_transaction_date: null without transactions, else the latest date on either side', async () => {
+      const result = await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance, scale)
+         VALUES ($1, 'Savings', 'USD', 0, 2) RETURNING id`,
+        [testUserId]
+      );
+      const savingsId = result.rows[0].id;
+
+      let res = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+      expect(res.body.data.find((a: { id: number }) => a.id === accountId).last_transaction_date).toBeNull();
+
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 1000, 1000, '2026-01-05')`,
+        [testUserId, expenseCategoryId, accountId]
+      );
+      await pool.query(
+        `INSERT INTO transactions (user_id, debit_account_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 1000, 1000, '2026-02-01')`,
+        [testUserId, savingsId, accountId]
+      );
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 1000, 1000, '2026-01-20')`,
+        [testUserId, incomeCategoryId, accountId]
+      );
+
+      res = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+      const accounts = res.body.data as Array<{ id: number; last_transaction_date: string | null }>;
+      expect(accounts.find(a => a.id === accountId)!.last_transaction_date).toBe('2026-02-01');
+      expect(accounts.find(a => a.id === savingsId)!.last_transaction_date).toBe('2026-02-01');
+    });
+  });
+
+  describe('POST /api/accounts', () => {
+    afterEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+      await pool.query('DELETE FROM accounts WHERE user_id = $1', [testUserId]);
+    });
+
+    it('returns balance equal to startBalance on creation', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'New Account', currency: 'EUR', startBalance: 20 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.balance).toBe(20);
+    });
+
+    it('accepts 4-letter crypto-style currency codes (USDT, USDC)', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Crypto', currency: 'USDT', startBalance: 0 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.currency).toBe('USDT');
+    });
+  });
+
+  describe('POST /api/accounts — currency format validation', () => {
+    it('rejects lowercase currency code', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'X', currency: 'usd' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Currency must be/);
+    });
+
+    it('rejects 2-letter currency code', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'X', currency: 'US' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects 5-letter currency code', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'X', currency: 'USDXL' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects currency with digits', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'X', currency: 'US1' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects empty currency', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'X', currency: '' });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('PUT /api/accounts/:id', () => {
+    let accountId: number;
+
+    beforeEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+      await pool.query('DELETE FROM accounts WHERE user_id = $1', [testUserId]);
+
+      const result = await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance, scale)
+         VALUES ($1, 'Editable', 'USD', 5000, 2) RETURNING id`,
+        [testUserId]
+      );
+      accountId = result.rows[0].id;
+    });
+
+    it('reflects updated startBalance in balance when no transactions exist', async () => {
+      const res = await request(app)
+        .put(`/api/accounts/${accountId}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ type: 'cash', startBalance: 80, settings: {} });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.balance).toBe(80);
+    });
+
+    it('rejects a startBalance change when the account has transactions', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 1000, 1000, '2026-01-10')`,
+        [testUserId, incomeCategoryId, accountId]
+      );
+
+      const res = await request(app)
+        .put(`/api/accounts/${accountId}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ type: 'cash', startBalance: 30, settings: {} });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/start balance/i);
+      const stored = await pool.query('SELECT start_balance FROM accounts WHERE id = $1', [accountId]);
+      expect(Number(stored.rows[0].start_balance)).toBe(5000);
+    });
+
+    it('accepts an unchanged startBalance when the account has transactions', async () => {
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 1000, 1000, '2026-01-10')`,
+        [testUserId, incomeCategoryId, accountId]
+      );
+
+      const res = await request(app)
+        .put(`/api/accounts/${accountId}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Renamed', type: 'cash', startBalance: 50, settings: {} });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.name).toBe('Renamed');
+      expect(res.body.data.balance).toBe(60); // 50 + 10
+    });
+
+    it('returns 404 when the account is deleted while the update runs', async () => {
+      const spy = jest.spyOn(accountQueries, 'updateAccount').mockResolvedValueOnce(null);
+      try {
+        const res = await request(app)
+          .put(`/api/accounts/${accountId}`)
+          .set({ Authorization: `Bearer ${token}` })
+          .send({ name: 'Gone', type: 'cash', settings: {} });
+
+        expect(res.status).toBe(404);
+        expect(res.body.error).toMatch(/deleted/i);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  describe('DELETE /api/accounts/:id', () => {
+    beforeEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+      await pool.query('DELETE FROM accounts WHERE user_id = $1', [testUserId]);
+    });
+
+    it('hard-deletes an account with no transactions', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Empty', currency: 'USD', startBalance: 0 });
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .delete(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.kind).toBe('hard-deleted');
+
+      // Verify the row is gone
+      const r = await pool.query('SELECT id FROM accounts WHERE id = $1', [id]);
+      expect(r.rows.length).toBe(0);
+    });
+
+    it('soft-deletes an account with transactions and zero balance', async () => {
+      // Account with start_balance 10000 cents ($100); one expense of $100 → balance = 0
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'ZeroBalance', currency: 'USD', startBalance: 100 });
+      const id = created.body.data.id;
+
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 10000, 10000, '2026-01-15')`,
+        [testUserId, expenseCategoryId, id]
+      );
+
+      const res = await request(app)
+        .delete(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.kind).toBe('soft-deleted');
+
+      // Verify the row still exists with deleted=true
+      const r = await pool.query('SELECT id, deleted FROM accounts WHERE id = $1', [id]);
+      expect(r.rows.length).toBe(1);
+      expect(r.rows[0].deleted).toBe(true);
+    });
+
+    it('rejects with 409 when account has transactions and non-zero balance', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Positive', currency: 'USD', startBalance: 50 });
+      const id = created.body.data.id;
+
+      // Add a transaction that does NOT zero out the balance.
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, credit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 1000, 1000, '2026-01-15')`,
+        [testUserId, incomeCategoryId, id]
+      );
+
+      const res = await request(app)
+        .delete(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/non-zero balance/);
+
+      // Verify the row is still active
+      const r = await pool.query('SELECT deleted FROM accounts WHERE id = $1', [id]);
+      expect(r.rows[0].deleted).toBe(false);
+    });
+
+    it('returns 404 when deleting an already soft-deleted account', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Twice', currency: 'USD', startBalance: 100 });
+      const id = created.body.data.id;
+
+      await pool.query(
+        `INSERT INTO transactions (user_id, category_id, debit_account_id, debit, credit, date)
+         VALUES ($1, $2, $3, 10000, 10000, '2026-01-15')`,
+        [testUserId, expenseCategoryId, id]
+      );
+
+      // First delete succeeds (balance is 0)
+      const first = await request(app)
+        .delete(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` });
+      expect(first.status).toBe(200);
+
+      // Second delete returns 404
+      const second = await request(app)
+        .delete(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` });
+      expect(second.status).toBe(404);
+    });
+  });
+
+  describe('Currency conversion', () => {
+    // A currency code not used by any other test in this file, so a real
+    // (unmocked) fetch from an earlier test can never pre-cache a rate for
+    // this pair and shadow the mock here.
+    const FX_CURRENCY = 'QQQ';
+
+    beforeEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+      await pool.query('DELETE FROM accounts WHERE user_id = $1', [testUserId]);
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ date: new Date().toISOString().slice(0, 10), rates: { EUR: 0.5 } }),
+      }) as unknown as typeof fetch;
+    });
+
+    afterAll(async () => {
+      await pool.query(`DELETE FROM exchange_rates WHERE from_currency = $1 AND to_currency = 'EUR'`, [FX_CURRENCY]);
+    });
+
+    afterEach(async () => {
+      await pool.query('DELETE FROM transactions WHERE user_id = $1', [testUserId]);
+      await pool.query('DELETE FROM accounts WHERE user_id = $1', [testUserId]);
+    });
+
+    it('includes user_balance converted into the user EUR currency', async () => {
+      await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance, scale)
+         VALUES ($1, 'Wallet', $2, 10000, 2)`,
+        [testUserId, FX_CURRENCY]
+      );
+
+      const res = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+
+      expect(res.status).toBe(200);
+      // $100 at rate 0.5 -> €50
+      expect(res.body.data[0].user_balance).toBe(50);
+    });
+
+    it('sets user_balance to null when no rate is available', async () => {
+      global.fetch = jest.fn().mockRejectedValue(new Error('network down'));
+
+      await pool.query(
+        `INSERT INTO accounts (user_id, name, currency, start_balance, scale)
+         VALUES ($1, 'Wallet', 'ZZZ', 10000, 2)`,
+        [testUserId]
+      );
+
+      const accountsRes = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+      expect(accountsRes.body.data[0].user_balance).toBeNull();
+    });
+  });
+
+  describe('Account type and settings', () => {
+    it('defaults to cash with empty settings when type is omitted', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'No Type', currency: 'USD', startBalance: 0 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.type).toBe('cash');
+      expect(res.body.data.settings).toEqual({});
+    });
+
+    it('round-trips bank settings', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Checking', currency: 'USD', startBalance: 0,
+          type: 'bank', settings: { accountNumber: 'DE89370400440532013000' },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.type).toBe('bank');
+      expect(res.body.data.settings).toEqual({ accountNumber: 'DE89370400440532013000' });
+    });
+
+    it('round-trips crypto settings', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Wallet', currency: 'BTC', startBalance: 0,
+          type: 'crypto', settings: { address: 'bc1qxy2k', blockchain: 'bitcoin' },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.settings).toEqual({ address: 'bc1qxy2k', blockchain: 'bitcoin' });
+    });
+
+    it('rejects a settings key belonging to another type', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Wrong', currency: 'USD', startBalance: 0,
+          type: 'bank', settings: { address: 'bc1qxy2k' },
+        });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects an unknown settings key', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Typo', currency: 'USD', startBalance: 0,
+          type: 'bank', settings: { acountNumber: '123' },
+        });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects an unknown account type', async () => {
+      const res = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Debt', currency: 'USD', startBalance: 0, type: 'debt' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('replaces settings rather than merging them when the type changes', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Switcher', currency: 'USD', startBalance: 0,
+          type: 'bank', settings: { accountNumber: '111' },
+        });
+      const id = created.body.data.id;
+
+      const updated = await request(app)
+        .put(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Switcher', currency: 'USD', startBalance: 0,
+          type: 'crypto', settings: { address: '0xabc' },
+        });
+
+      expect(updated.status).toBe(200);
+      expect(updated.body.data.type).toBe('crypto');
+      expect(updated.body.data.settings).toEqual({ address: '0xabc' });
+      expect(updated.body.data.settings.accountNumber).toBeUndefined();
+    });
+
+    it('rejects a PUT that omits type', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Renamable', currency: 'USD', startBalance: 0, type: 'cash' });
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .put(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Renamed' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a PUT that omits settings, and leaves stored settings untouched', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Bank Account', currency: 'USD', startBalance: 0,
+          type: 'bank', settings: { accountNumber: 'DE89370400440532013000' },
+        });
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .put(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Renamed', type: 'bank' });
+
+      expect(res.status).toBe(400);
+
+      const stillThere = await request(app)
+        .get('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` });
+      const account = stillThere.body.data.find((a: { id: number }) => a.id === id);
+      expect(account.settings).toEqual({ accountNumber: 'DE89370400440532013000' });
+    });
+
+    it('accepts an explicit empty settings object on PUT and clears stored settings', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Bank Account 2', currency: 'USD', startBalance: 0,
+          type: 'bank', settings: { accountNumber: 'DE89370400440532013000' },
+        });
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .put(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ name: 'Bank Account 2', type: 'bank', settings: {} });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.settings).toEqual({});
+    });
+
+    it('preserves accountNumber when renaming a bank account with settings supplied', async () => {
+      const created = await request(app)
+        .post('/api/accounts')
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'Bank Account 3', currency: 'USD', startBalance: 0,
+          type: 'bank', settings: { accountNumber: 'DE89370400440532013000' },
+        });
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .put(`/api/accounts/${id}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({
+          name: 'New Name', type: 'bank',
+          settings: { accountNumber: 'DE89370400440532013000' },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.name).toBe('New Name');
+      expect(res.body.data.settings).toEqual({ accountNumber: 'DE89370400440532013000' });
+    });
+  });
+});
+
+describe('Accounts API — user not found', () => {
+  const app = createTestApp();
+
+  // A valid, well-formed access token whose userId has no backing row —
+  // simulates a still-unexpired JWT for a deleted/nonexistent user.
+  const tokenForMissingUser = jwt.sign(
+    { userId: 999999999, type: 'access' },
+    process.env.JWT_SECRET!,
+    { algorithm: 'HS256', expiresIn: '15m' }
+  );
+
+  it('GET /api/accounts returns 401 User not found instead of crashing', async () => {
+    const res = await request(app)
+      .get('/api/accounts')
+      .set({ Authorization: `Bearer ${tokenForMissingUser}` });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('User not found');
+  });
+});

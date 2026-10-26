@@ -1,3 +1,5 @@
+@use "../../../styles/access-levels";
+
 :host {
     height: 60vh;
     display: flex;
@@ -12,8 +14,15 @@
 
 .list {
     width: 100%;
-    flex-grow: 1;
+    flex: 1;
     overflow: auto;
+}
+
+.section {
+    padding: .25rem;
+    margin-bottom: .5rem;
+    border-radius: var(--tui-radius-l);
+    @include access-levels.tints;
 }
 
 .account {
@@ -33,18 +42,18 @@
     }
 }
 
-.account-name {
-    font-weight: 500;
+.account-meta {
+    font: var(--tui-typography-body-s);
+    color: var(--tui-text-secondary);
 }
 
-.account-meta {
-    font: var(--tui-font-text-s);
-    color: var(--tui-text-secondary);
+.account-user-balance {
+    color: var(--tui-text-tertiary);
 }
 
 .empty {
     color: var(--tui-text-secondary);
-    font: var(--tui-font-text-s);
+    font: var(--tui-typography-body-s);
     padding: 1rem;
     text-align: center;
 }
