@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import * as authService from '../services/auth';
+import * as loginLimiter from '../services/loginLimiter';
 import { validate } from '../middleware/validation';
 
 const router = Router();
@@ -57,7 +58,23 @@ router.post('/register', validate(registerSchema), async (req, res, next) => {
 router.post('/login', validate(loginSchema), async (req, res, next) => {
   try {
     const { email, password } = req.body;
-    const result = await authService.login(email, password);
+    const key = `${req.ip}|${email}`;
+    if (loginLimiter.isBlocked(key)) {
+      return next({ statusCode: 429, message: 'Too many failed login attempts, try again later' });
+    }
+    // Count the attempt before checking the password, so parallel guesses
+    // can't all slip past isBlocked while bcrypt runs; a success clears it.
+    loginLimiter.recordFailure(key);
+    let result;
+    try {
+      result = await authService.login(email, password);
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode === 401) {
+        console.warn(`Failed login for ${email} from ${req.ip}`);
+      }
+      throw error;
+    }
+    loginLimiter.clearFailures(key);
     res.json({
       data: {
         user: {

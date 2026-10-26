@@ -126,3 +126,57 @@ safe against a live database. It checks three things:
 The 2026-09-18 run: 2 users, 62 accounts, 80 categories (76 user + 4 system),
 29 shares, 15 182 transactions (12 127 expense / 1 876 income / 1 179 transfer),
 all balances identical, all invariants zero.
+
+# Copy to Neon (`copy-to-neon.ts`)
+
+One-off copy of users 1 and 2 — their accounts, shares, categories,
+transactions, `chain_seen_txids` — plus all cached `exchange_rates` from the
+local dev DB (`DATABASE_URL`) into the production database, keeping ids and
+moving the sequences past them. The source is only read.
+
+```bash
+cd backend
+# 1. migrate the target through Neon's direct endpoint
+DATABASE_URL="$(grep '^NEON_DATABASE_URL_UNPOOLED=' .env | cut -d= -f2- | tr -d '"')" npm run migrate
+# 2. copy; TARGET is a URL or the name of a variable in backend/.env
+npx tsx scripts/copy-to-neon.ts NEON_DATABASE_URL_UNPOOLED
+```
+
+It refuses to run unless the target has the same migrations and no user data,
+so it cannot run twice. It prints source/target row counts and per-account
+balances and exits 1 on any mismatch.
+
+# Production backups
+
+`.github/workflows/backup.yml` dumps the Neon database daily at 03:00 UTC (and
+on **Run workflow**), encrypts it with `age` and uploads
+`swarmer-finance-YYYYMMDD-HHMM.dump.age` to `swarmer-finance-backups` on the
+owner's Google Drive, keeping the newest 30. Repository secrets:
+
+- `BACKUP_DATABASE_URL` — Neon's direct (unpooled) URL
+- `BACKUP_AGE_RECIPIENT` — the `age` public key (`age1…`); the private key is
+  kept by the owner only, outside the repo and Drive
+- `RCLONE_CONFIG` — an `rclone.conf` with a `[gdrive]` Drive remote
+  (`scope = drive.file`) using the owner's own OAuth client (Google Cloud
+  project "swarmer-backup"; privacy page `frontend/public/privacy.html`).
+  With `drive.file` a client sees only files it created, so switching to
+  another client starts a new backup folder.
+
+## Restoring
+
+```bash
+age -d -i ~/path/to/swarmer-backup-key.txt swarmer-finance-YYYYMMDD-HHMM.dump.age > restore.dump
+# inspect it in a throwaway Postgres 18 (the dev container is v15 and its
+# tools refuse a v18 dump)
+docker run -d --rm --name restore-check -e POSTGRES_PASSWORD=check postgres:18
+docker cp restore.dump restore-check:/restore.dump
+docker exec restore-check createdb -U postgres check
+docker exec restore-check pg_restore --no-owner --no-privileges -U postgres -d check /restore.dump
+docker exec -it restore-check psql -U postgres -d check   # look around
+docker stop restore-check                                  # removes it
+```
+
+Restoring into Neon itself: create a new Neon branch or an empty database,
+`pg_restore --no-owner --no-privileges -d <its direct URL> restore.dump`, check
+it, then point Render's `DATABASE_URL`/`DATABASE_URL_UNPOOLED` at it. For a
+mistake noticed within 6 hours, Neon's point-in-time restore is simpler.
